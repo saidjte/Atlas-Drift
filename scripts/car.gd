@@ -32,9 +32,7 @@ var _n_up := Vector3.UP
 var _wheel_spin := 0.0
 var _acc_disp := 0.0
 
-var body_mesh: MeshInstance3D
-var cabin_mesh: MeshInstance3D
-var wheels: Array[MeshInstance3D] = []
+var wheels: Array[MeshInstance3D] = []   # FL, FR, RL, RR
 var cam: Camera3D
 var engine_player: AudioStreamPlayer
 var skid_player: AudioStreamPlayer
@@ -169,9 +167,11 @@ func _update_transform(fwd_s: Vector3, rgt: Vector3) -> void:
 
 
 func _update_wheels(dt: float, vF: float) -> void:
-        _wheel_spin += vF * dt / 0.34
+        _wheel_spin += vF * dt / 0.48   # scaled sedan wheel radius (0.3 * 1.6)
         for i in wheels.size():
                 var w := wheels[i]
+                if w == null:
+                        continue
                 if i < 2:
                         w.basis = Basis(Vector3.UP, steer) * Basis(Vector3(1, 0, 0), _wheel_spin)
                 else:
@@ -226,72 +226,44 @@ func speed_kph() -> float:
 
 # ---------------------------------------------------------------- visuals
 
+## Sedan-sports model (srcoder SimpleCar asset, CC0). The glTF faces +Z and
+## our forward is -Z, so the model is wrapped in a 180° yaw pivot. Uniform
+## scale 1.6 brings it to ~4.1 m long to match the physics footprint.
+const CAR_SCALE := 1.6
+
 func _build_visuals() -> void:
-        body_mesh = MeshInstance3D.new()
-        var bm := BoxMesh.new()
-        bm.size = Vector3(1.9, 0.55, 4.3)
-        body_mesh.mesh = bm
-        body_mesh.position = Vector3(0, 0.62, 0)
-        var mat := StandardMaterial3D.new()
-        mat.albedo_color = Color(0.88, 0.26, 0.20)
-        mat.roughness = 0.4
-        body_mesh.material_override = mat
-        add_child(body_mesh)
+        var wrap := Node3D.new()
+        wrap.rotation.y = PI
+        add_child(wrap)
 
-        cabin_mesh = MeshInstance3D.new()
-        var cm := BoxMesh.new()
-        cm.size = Vector3(1.62, 0.52, 2.0)
-        cabin_mesh.mesh = cm
-        cabin_mesh.position = Vector3(0, 1.12, -0.15)
-        var cmat := StandardMaterial3D.new()
-        cmat.albedo_color = Color(0.10, 0.12, 0.16)
-        cmat.roughness = 0.2
-        cabin_mesh.material_override = cmat
-        add_child(cabin_mesh)
+        var car_scene: PackedScene = load("res://assets/car/sedan-sports.glb")
+        var vis := car_scene.instantiate() as Node3D
+        vis.scale = Vector3(CAR_SCALE, CAR_SCALE, CAR_SCALE)
+        wrap.add_child(vis)
 
-        var wing := MeshInstance3D.new()
-        var wm := BoxMesh.new()
-        wm.size = Vector3(1.7, 0.08, 0.45)
-        wing.mesh = wm
-        wing.position = Vector3(0, 1.05, 2.0)
-        var wmat := StandardMaterial3D.new()
-        wmat.albedo_color = Color(0.13, 0.13, 0.15)
-        wing.material_override = wmat
-        add_child(wing)
-
-        var wm2 := MeshInstance3D.new()
-        var wm2m := BoxMesh.new()
-        wm2m.size = Vector3(0.12, 0.32, 0.4)
-        wm2.mesh = wm2m
-        wm2.position = Vector3(0, 0.85, 2.0)
-        wm2.material_override = wmat
-        add_child(wm2)
-
-        var wheel_mesh := CylinderMesh.new()
-        wheel_mesh.top_radius = 0.34
-        wheel_mesh.bottom_radius = 0.34
-        wheel_mesh.height = 0.3
-        var wheel_mat := StandardMaterial3D.new()
-        wheel_mat.albedo_color = Color(0.08, 0.08, 0.09)
-        var positions := [
-                Vector3(-0.88, 0.34, -1.32), Vector3(0.88, 0.34, -1.32),
-                Vector3(-0.88, 0.34, 1.38), Vector3(0.88, 0.34, 1.38)
-        ]
-        for p in positions:
-                var w := MeshInstance3D.new()
-                w.mesh = wheel_mesh
-                w.material_override = wheel_mat
-                w.position = p
-                w.rotation_degrees = Vector3(0, 0, 90)
-                add_child(w)
+        wheels = []
+        for n in ["wheel-front-left", "wheel-front-right", "wheel-back-left", "wheel-back-right"]:
+                var w := vis.find_child(n, true, false) as MeshInstance3D
                 wheels.append(w)
+        _make_materials_double_sided(vis)
 
         var cs := CollisionShape3D.new()
         var shape := BoxShape3D.new()
-        shape.size = Vector3(1.8, 0.9, 4.1)
+        shape.size = Vector3(1.95, 1.0, 4.05)
         cs.shape = shape
-        cs.position = Vector3(0, 0.7, 0)
+        cs.position = Vector3(0, 0.72, 0)
         add_child(cs)
+
+
+func _make_materials_double_sided(n: Node) -> void:
+        if n is MeshInstance3D:
+                var mi := n as MeshInstance3D
+                for i in mi.get_surface_override_material_count():
+                        var m := mi.get_active_material(i)
+                        if m is BaseMaterial3D:
+                                (m as BaseMaterial3D).cull_mode = BaseMaterial3D.CULL_DISABLED
+        for c in n.get_children():
+                _make_materials_double_sided(c)
 
 
 func _build_audio() -> void:

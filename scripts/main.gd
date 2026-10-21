@@ -1,7 +1,7 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, menu <-> world switching.
 
-const GAME_VERSION := "0.1.0"
+const GAME_VERSION := "0.2.0"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
