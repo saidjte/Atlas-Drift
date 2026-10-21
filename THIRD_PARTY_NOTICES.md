@@ -43,3 +43,47 @@ https://github.com/JackLinhart/GodotCardManager
 Vendored with minimal Godot 4 compatibility fixes (documented in the file
 header): class_name added, sort_custom Callable form, dictionary key
 "FACE-UP" in flipCard/setRevealed, fieldExists boolean logic.
+
+## Godot Road Generator (addons/road-generator/)
+"Godot Road Generator" by Moo-Ack! Productions (TheDuckCow), version 0.9.5.
+Licensed under the MIT License (see addons/road-generator/LICENSE).
+https://github.com/TheDuckCow/godot-road-generator
+
+Vendored unmodified. Since v0.4.0 the asphalt ribbon of the touge circuit is
+built at runtime from a closed RoadManager > RoadContainer > RoadPoint chain
+laid on the game's analytic centerline: trimsheet lane markings, banked
+cross-sections, underside slabs and automated trimesh collision come from
+the addon's procedural geometry.
+
+## Starter Kit Racing (assets/skr/)
+"Starter Kit Racing" by Kenney.
+Licensed under the MIT License (Copyright (c) 2023 Kenney).
+https://godotengine.org/asset-library/asset/2702
+
+Used since v0.4.0:
+  - audio/engine.ogg + audio/skid.ogg: continuous engine and tire loops
+    (loop flag applied at runtime), audio/impact.ogg: collision one-shot
+    routed through EventAudio.
+  - sprites/smoke.png: tire-smoke particles at the rear wheels.
+  - models/Library mesh library: the GridMap-built start/finish paddock
+    (track slabs, corner, tents, forest decoration cells).
+  - models/vehicle-truck-green.glb + vehicle-truck-red.glb: parked paddock
+    props.
+The kit's arcade-style eased input handling (vehicle.gd) is mirrored in
+scripts/car.gd (lerped throttle/steer targets).
+
+## 3D Car With Settingspanel (assets/car3d/ + scripts/settings_panel.gd)
+"3D Car With Settingspanel" (3d_car_customizable).
+Licensed under CC0 1.0 Universal (public domain dedication).
+https://godotengine.org/asset-library/asset/3815
+
+Used since v0.4.0:
+  - assets/car3d/car_model.glb: the player car model (body tinted green;
+    the importer-generated VehicleWheel3D nodes are adopted directly).
+  - The SettingsPanel tuning + preset system (scripts/settings.gd and
+    wheelsettings.gd, Godot 3) was ported to Godot 4 as
+    scripts/settings_panel.gd with an Arabic UI: engine/brake/steering
+    variables, per-wheel tuning with binding, and JSON presets saved to
+    user://3d_car_customizable/ — same schema as the original, first preset
+    auto-loads on launch. Preset persistence helpers live in
+    scripts/car.gd (list/save/load/delete/apply).

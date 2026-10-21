@@ -3,6 +3,12 @@ extends Node3D
 ## Procedural Atlas mountain circuit: smooth closed loop (subdivide + Laplacian
 ## smoothing, the proven v3.0.0 approach), analytic banking, visual guardrails
 ## WITH collision (nothing invisible), skirt embankments, scenery via MultiMesh.
+## v0.4.0: the asphalt ribbon itself is now built by the "Godot Road Generator"
+## addon (TheDuckCow, MIT — addons/road-generator): a closed chain of
+## RoadManager > RoadContainer > RoadPoint nodes laid on the same analytic
+## centerline, giving trimsheet lane markings, tiled geometry, underside slabs
+## and automated trimesh collision. The flat start paddock is a GridMap built
+## from "Starter Kit Racing" mesh library (Kenney, MIT).
 
 const N := 880                 # arc-length samples around the loop
 const HALF_W := 6.0            # road half width (12 m)
@@ -10,6 +16,9 @@ const CURB_W := 0.9
 const SKIRT_W := 14.0
 const RAIL_H := 0.95
 const BASE_Y := -6.0
+const RP_STEP := 8             # one RoadPoint every N/RP_STEP samples
+const PADDOCK_CENTER := Vector3(85, 0, -248)
+const PADDOCK_RADIUS := 55.0   # scenery exclusion zone around the paddock
 
 var pts := PackedVector3Array()      # centerline
 var tans := PackedVector3Array()
@@ -18,6 +27,9 @@ var rgts_flat := PackedVector3Array()
 var ups := PackedVector3Array()
 var roll := PackedFloat32Array()
 var total_len := 0.0
+
+var road_container: RoadContainer    # Road Generator container (v0.4.0)
+var paddock: GridMap                 # Starter Kit Racing GridMap (v0.4.0)
 
 var _sun: DirectionalLight3D
 var _mat_vc: StandardMaterial3D
@@ -34,9 +46,10 @@ func build(shadows: bool) -> void:
         _mat_vc_ds = _mat_vc.duplicate()
         _make_centerline()
         _make_frames()
-        _build_road()
+        _build_road_generator()
         _build_rails()
         _build_skirt_and_terrain()
+        _build_paddock()
         _build_scenery()
         _build_gates()
         _setup_environment(shadows)
@@ -145,7 +158,83 @@ func _make_frames() -> void:
                 ups[i] = (q * ups[i]).normalized()
 
 
-# ---------------------------------------------------------------- road mesh
+# ---------------------------------------------------------------- road (Road Generator)
+
+## Build the asphalt ribbon with the Godot Road Generator addon: a closed
+## chain of RoadPoint nodes on the analytic centerline. Each RoadPoint carries
+## the banked frame (right/up/tangent basis) so the generated geometry keeps
+## the v0.3.0 banking; the trimsheet material provides lane markings, and the
+## container generates trimesh collision for every segment automatically.
+func _build_road_generator() -> void:
+        var manager := RoadManager.new()
+        manager.name = "RoadManager"
+        add_child(manager)
+        var container := RoadContainer.new()
+        container.name = "TougeRoad"
+        container.collider_group_name = "road"
+        container.flatten_terrain = false
+        container.underside_thickness = 1.2
+        container.create_edge_curves = false
+        container.generate_ai_lanes = false
+        container.collision_layer = 1
+        container.collision_mask = 1
+        manager.add_child(container)
+        road_container = container
+        # Suppress per-property rebuild storms while assembling the chain;
+        # one explicit rebuild at the end builds every segment once.
+        container._auto_refresh = false
+
+        var count := N / RP_STEP
+        var rps: Array[RoadPoint] = []
+        for k in count:
+                var i := k * RP_STEP
+                var rp := RoadPoint.new()
+                rp.name = "RP_%03d" % k
+                # Right-handed point frame: x = left, y = up, z = forward
+                # (tangent). rgts points LEFT already (tg x UP), so the frame
+                # x axis is -rgts; a mirrored (det<1) basis twists every
+                # segment junction and punches holes in the road surface.
+                var left := ups[i].cross(tans[i]).normalized()
+                var b := Basis(left, ups[i], tans[i]).orthonormalized()
+                rp.transform = Transform3D(b, pts[i])
+                container.add_child(rp)
+                rps.append(rp)
+        for k in count:
+                var rp := rps[k]
+                var i := k * RP_STEP
+                var ip := ((k - 1 + count) % count) * RP_STEP
+                var inx := ((k + 1) % count) * RP_STEP
+                rp.auto_lanes = true
+                rp.traffic_dir = [RoadPoint.LaneDir.FORWARD, RoadPoint.LaneDir.FORWARD]
+                rp.lanes = [RoadPoint.LaneType.FAST, RoadPoint.LaneType.SLOW]
+                rp.lane_width = 4.6
+                rp.shoulder_width_l = 1.4
+                rp.shoulder_width_r = 1.4
+                rp.gutter_profile = Vector2(0.0, 0.0)
+                rp.underside_thickness = 1.2
+                rp.flatten_terrain = false
+                rp.prior_mag = maxf(pts[i].distance_to(pts[ip]) * 0.5, 4.0)
+                rp.next_mag = maxf(pts[i].distance_to(pts[inx]) * 0.5, 4.0)
+        # Closed loop: every point links to its neighbours in both directions.
+        for k in count:
+                var nxt := (k + 1) % count
+                var prv := (k - 1 + count) % count
+                rps[k].next_pt_init = NodePath("../RP_%03d" % nxt)
+                rps[k].prior_pt_init = NodePath("../RP_%03d" % prv)
+        container._auto_refresh = true
+        container.rebuild_segments(true)
+        # Belt & suspenders: make sure every generated collision body carries
+        # the "road" group so the car's per-wheel surface grip detects it.
+        var grouped := 0
+        for cnode in container.get_collision_nodes():
+                if not cnode.is_in_group("road"):
+                        cnode.add_to_group("road")
+                grouped += 1
+        print("RoadGen: %d RoadPoints -> %d segments, %d collision bodies" % [
+                count, container.get_segments().size(), grouped])
+
+
+# ------------------------------------------------------------- shared helpers
 
 func _edge(i: int, side: float, extra := 0.0) -> Vector3:
         return pts[i] + rgts[i] * (side * (HALF_W + extra))
@@ -160,72 +249,6 @@ func _add_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, 
                 st.set_normal(n)
                 st.set_color(col)
                 st.add_vertex(v)
-
-
-func _build_road() -> void:
-        # Collision uses the bare road surface ONLY: decor strips (curbs, dashes,
-        # start banner strip) are visual-only — raised slabs inside a backface-on
-        # trimesh would trap the car in depenetration fights.
-        var road := ArrayMesh.new()
-        var st := SurfaceTool.new()
-        st.begin(Mesh.PRIMITIVE_TRIANGLES)
-        var asphalt := Color(0.30, 0.31, 0.34)
-        for i in N:
-                var j := (i + 1) % N
-                var n := (ups[i] + ups[j]).normalized()
-                _add_quad(st, _edge(i, -1), _edge(i, 1), _edge(j, 1), _edge(j, -1), asphalt, n)
-        st.commit(road)
-
-        var deco := ArrayMesh.new()
-        var stc := SurfaceTool.new()
-        stc.begin(Mesh.PRIMITIVE_TRIANGLES)
-        for i in N:
-                var j := (i + 1) % N
-                var col := Color(0.85, 0.16, 0.14) if (i / 4) % 2 == 0 else Color(0.92, 0.9, 0.86)
-                var n := (ups[i] + ups[j]).normalized()
-                for side in [-1.0, 1.0]:
-                        var a := _edge(i, side, 0.0) + ups[i] * 0.015
-                        var b := _edge(i, side, CURB_W) + ups[i] * 0.015
-                        var c := _edge(j, side, CURB_W) + ups[j] * 0.015
-                        var d := _edge(j, side, 0.0) + ups[j] * 0.015
-                        _add_quad(stc, a, b, c, d, col, n)
-        stc.commit(deco)
-
-        var std := SurfaceTool.new()
-        std.begin(Mesh.PRIMITIVE_TRIANGLES)
-        var white := Color(0.93, 0.91, 0.85)
-        for i in range(0, N, 8):
-                var j2 := (i + 2) % N
-                var a2 := pts[i] - rgts_flat[i] * 0.18 + ups[i] * 0.02
-                var b2 := pts[i] + rgts_flat[i] * 0.18 + ups[i] * 0.02
-                var c2 := pts[j2] + rgts_flat[j2] * 0.18 + ups[j2] * 0.02
-                var d2 := pts[j2] - rgts_flat[j2] * 0.18 + ups[j2] * 0.02
-                _add_quad(std, a2, b2, c2, d2, white, ups[i])
-        for k in range(-1, 2):
-                var i0 := (2 + k + N) % N
-                var j0 := (5 + k + N) % N
-                _add_quad(std, _edge(i0, -1) + ups[i0] * 0.03, _edge(i0, 1) + ups[i0] * 0.03,
-                        _edge(j0, 1) + ups[j0] * 0.03, _edge(j0, -1) + ups[j0] * 0.03, white, ups[i0])
-        std.commit(deco)
-
-        var road_mi := MeshInstance3D.new()
-        road_mi.mesh = road
-        add_child(road_mi)
-        var deco_mi := MeshInstance3D.new()
-        deco_mi.mesh = deco
-        deco_mi.material_override = _mat_vc
-        add_child(deco_mi)
-
-        var body := StaticBody3D.new()
-        body.add_to_group("road")
-        var cs := CollisionShape3D.new()
-        var shape: ConcavePolygonShape3D = road.create_trimesh_shape()
-        # Winding is CW-front per Godot; keep the slab double-sided so the
-        # car collides from above regardless of triangle orientation.
-        shape.backface_collision = true
-        cs.shape = shape
-        body.add_child(cs)
-        add_child(body)
 
 
 # ---------------------------------------------------------------- guardrails
@@ -371,6 +394,87 @@ func _build_skirt_and_terrain() -> void:
         add_child(pmi)
 
 
+# ---------------------------------------------------------------- paddock (GridMap)
+
+## Flat start/finish paddock built with a GridMap and the "Starter Kit Racing"
+## mesh library (Kenney, MIT): an apron of track-straight slabs, a track-corner
+## turn piece, tents + forest decoration cells, and two parked trucks with real
+## collision. Honours the GridMap-based track creation of the kit.
+func _build_paddock() -> void:
+        var lib: MeshLibrary = load("res://assets/skr/models/mesh_library.tres")
+        if lib == null:
+                push_warning("SKR mesh library missing — paddock skipped")
+                return
+        paddock = GridMap.new()
+        paddock.name = "PaddockGridMap"
+        paddock.mesh_library = lib
+        paddock.cell_size = Vector3(10, 1, 10)
+        # Start straight runs +X near z=-300; put the apron inside the loop.
+        paddock.position = Vector3(PADDOCK_CENTER.x, BASE_Y + 0.12, PADDOCK_CENTER.z)
+        add_child(paddock)
+
+        const EMPTY := 0    # decoration-empty
+        const FOREST := 1   # decoration-forest
+        const TENTS := 2    # decoration-tents
+        const CORNER := 3   # track-corner
+        const STRAIGHT := 6 # track-straight
+
+        # Apron: 6 x 2 slabs (a pit lane). The slabs are square 10 x 10 m, so the
+        # default orientation is fine (Godot 4 has no exposed orthogonal-index
+        # helper for arbitrary GridMap rotations).
+        for gx in 6:
+                for gz in [1, 2]:
+                        paddock.set_cell_item(Vector3i(gx, 0, gz), STRAIGHT)
+        # Corner piece closing the pit lane on the west end.
+        paddock.set_cell_item(Vector3i(-1, 0, 2), CORNER, 0)
+        # Tents row along the north edge, forest along the south edge.
+        for gx in 6:
+                if gx % 2 == 0:
+                        paddock.set_cell_item(Vector3i(gx, 0, 0), TENTS, 0)
+                else:
+                        paddock.set_cell_item(Vector3i(gx, 0, 0), EMPTY, 0)
+                paddock.set_cell_item(Vector3i(gx, 0, 4), FOREST, 0)
+        paddock.set_cell_item(Vector3i(-1, 0, 3), FOREST, 0)
+        paddock.set_cell_item(Vector3i(6, 0, 1), FOREST, 0)
+        paddock.set_cell_item(Vector3i(6, 0, 2), FOREST, 0)
+
+        # Parked trucks (Starter Kit models) on the apron with box collision.
+        _park_truck("res://assets/skr/models/vehicle-truck-green.glb",
+                Vector3(1.5, 0, 1.5), 0.6)
+        _park_truck("res://assets/skr/models/vehicle-truck-red.glb",
+                Vector3(4.0, 0, 1.5), -0.4)
+        # The retired v0.2/v0.3 green sedan, parked as a paddock showcase.
+        var sedan: Node3D = (load("res://assets/car/sedan-sports.glb") as PackedScene).instantiate()
+        sedan.scale = Vector3(1.6, 1.6, 1.6)
+        sedan.position = paddock.position + Vector3(26.0, 0.78, 24.0)
+        sedan.rotation.y = 0.35
+        add_child(sedan)
+        _make_static_box(sedan.global_position, Vector3(2.2, 1.6, 4.6), sedan.rotation.y)
+
+        print("Paddock: %d GridMap cells" % paddock.get_used_cells().size())
+
+
+func _park_truck(path: String, cell_local: Vector3, yaw: float) -> void:
+        var truck: Node3D = (load(path) as PackedScene).instantiate()
+        # GridMap origin is at PADDOCK_CENTER; slabs at cell y=0 top out at
+        # BASE_Y + 0.12 + 0.75. Trucks are glTF scale (~1:1, 5 m long).
+        truck.position = paddock.position + cell_local * 10.0 + Vector3(0, 0.88, 0)
+        truck.rotation.y = yaw
+        add_child(truck)
+        _make_static_box(truck.global_position, Vector3(2.6, 2.6, 5.4), yaw)
+
+
+func _make_static_box(pos: Vector3, size: Vector3, yaw: float) -> void:
+        var body := StaticBody3D.new()
+        var cs := CollisionShape3D.new()
+        var shape := BoxShape3D.new()
+        shape.size = size
+        cs.shape = shape
+        body.add_child(cs)
+        body.transform = Transform3D(Basis(Vector3.UP, yaw), pos)
+        add_child(body)
+
+
 # ---------------------------------------------------------------- scenery
 
 func _build_scenery() -> void:
@@ -404,13 +508,15 @@ func _build_scenery() -> void:
                 var off := _rng.randf_range(22.0, 52.0)
                 var r := rgts_flat[i]
                 var p := Vector3(pts[i].x + r.x * side * off, BASE_Y, pts[i].z + r.z * side * off)
+                if _in_paddock(p, 6.0):
+                        continue
                 spots.append(_tree_tf(p, _rng))
         # Scattered across the map, min distance from track.
         var tries := 0
         while spots.size() < 380 and tries < 3000:
                 tries += 1
                 var p := Vector3(_rng.randf_range(-650, 650), BASE_Y, _rng.randf_range(-650, 650))
-                if _dist_to_track(p) > 26.0:
+                if _dist_to_track(p) > 26.0 and not _in_paddock(p, 6.0):
                         spots.append(_tree_tf(p, _rng))
 
         for mm_i in 3:
@@ -448,7 +554,7 @@ func _build_scenery() -> void:
                 while not ok and guard < 60:
                         guard += 1
                         p = Vector3(_rng.randf_range(-620, 620), BASE_Y, _rng.randf_range(-620, 620))
-                        if _dist_to_track(p) > 18.0:
+                        if _dist_to_track(p) > 18.0 and not _in_paddock(p, 4.0):
                                 ok = true
                 var sc := _rng.randf_range(0.6, 2.6)
                 var b := Basis().rotated(Vector3.UP, _rng.randf_range(0.0, TAU)).scaled(Vector3(sc, sc * 0.7, sc))
@@ -509,6 +615,14 @@ func _dist_to_track(p: Vector3) -> float:
                 if d < best:
                         best = d
         return sqrt(best)
+
+
+## True when the XZ position sits inside the GridMap paddock area (plus an
+## extra margin), used to keep procedural scenery out of the paddock.
+func _in_paddock(p: Vector3, margin := 0.0) -> bool:
+        var dx := p.x - PADDOCK_CENTER.x
+        var dz := p.z - PADDOCK_CENTER.z
+        return Vector2(dx, dz).length() < PADDOCK_RADIUS + margin
 
 
 # ---------------------------------------------------------------- gates

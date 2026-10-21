@@ -1,13 +1,14 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.3.0"
+const GAME_VERSION := "0.4.0"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
 var font_bold: FontFile
 var world
 var menu
+var car_panel: CarSettingsPanel
 
 
 func _ready() -> void:
@@ -24,6 +25,8 @@ func _ready() -> void:
 ## Event Audio addon (addons/event_audio, autoload "EventAudio"): register a
 ## runtime-built EAEventBank. All discrete game SFX go through trigger tags;
 ## the tag hierarchy falls back right-to-left (e.g. "race+best" -> "race").
+## v0.4.0: the impact one-shot is the real Starter Kit Racing impact.ogg
+## (falls back to the synthesized thud if the asset is missing).
 func _setup_event_audio() -> void:
         var ea := get_node_or_null("/root/EventAudio")
         if ea == null:
@@ -35,7 +38,10 @@ func _setup_event_audio() -> void:
         _add_event(bank, "race+lap", AudioSynth.chime(), -6.0)
         _add_event(bank, "race+best", AudioSynth.fanfare(), -4.0)
         _add_event(bank, "race+card", AudioSynth.beep(880.0, 0.3, 0.35), -10.0, 0.98, 1.06)
-        _add_event(bank, "car+impact", AudioSynth.thud(), -6.0, 0.8, 1.25)
+        var impact: AudioStream = load("res://assets/skr/audio/impact.ogg")
+        if impact == null:
+                impact = AudioSynth.thud()
+        _add_event(bank, "car+impact", impact, -6.0, 0.85, 1.2)
         _add_event(bank, "race+wrong", AudioSynth.wrong_buzz(), -6.0)
         ea.register_event_bank(bank)
 
@@ -80,14 +86,36 @@ func _make_menu() -> void:
 
 func start_race() -> void:
         if world == null:
-                var game_script := load("res://scripts/game.gd")
-                world = game_script.new()
-                world.setup(self)
-                add_child(world)
+                _ensure_world()
         else:
                 world.unpause()
+        if car_panel != null and car_panel.is_open():
+                car_panel.close()
+                menu.visible = true
+                return
         menu.visible = false
         world.begin_race()
+
+
+## Lazily build the world (track + car + HUD) so the car settings panel has a
+## live VehicleBody3D to tune even before the first race.
+func _ensure_world() -> void:
+        if world != null:
+                return
+        var game_script := load("res://scripts/game.gd")
+        world = game_script.new()
+        world.setup(self)
+        add_child(world)
+
+
+## Menu entry point: open the 3D Car settings panel over the menu.
+func open_car_settings() -> void:
+        _ensure_world()
+        if car_panel == null:
+                car_panel = load("res://scripts/settings_panel.gd").new()
+                car_panel.setup(self, world.car)
+                add_child(car_panel)
+        car_panel.open()
 
 
 func exit_to_menu() -> void:
@@ -129,7 +157,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 ## Headless end-to-end smoke drive: menu -> race -> gas -> steer (direction
 ## verified!) -> drift -> brake -> quit. v0.3.0 thresholds calibrated for the
-## realistic VehicleBody3D physics (0-100 in ~7 s, ~140 km/h top).
+## realistic VehicleBody3D physics (0-100 in ~7 s, ~140 km/h top). v0.4.0 adds
+## Road Generator / GridMap paddock / SKR audio / smoke particles / preset
+## round-trip assertions.
 func _smoke_test() -> void:
     await get_tree().create_timer(1.0).timeout
     start_race()
@@ -176,7 +206,56 @@ func _smoke_test() -> void:
     var i2: int = world.last_idx
     var lap_t: float = world.lap_time
     print("SMOKE final: %d kph idx=%d lap_time=%.1f best=%.1f" % [int(s2), i2, lap_t, world.best_lap])
+
+    # --- v0.4.0 asset checks ---
     var ok := true
+    var segs := -1
+    if world.track.road_container != null:
+        segs = world.track.road_container.get_segments().size()
+    print("SMOKE roadgen: segments=%d" % segs)
+    if segs < 100:
+        print("SMOKE_FAIL: Road Generator segments missing (%d)" % segs)
+        ok = false
+    var cells := -1
+    if world.track.paddock != null:
+        cells = world.track.paddock.get_used_cells().size()
+    print("SMOKE paddock: cells=%d" % cells)
+    if cells < 10:
+        print("SMOKE_FAIL: GridMap paddock missing (%d)" % cells)
+        ok = false
+    if world.car.wheels.size() != 4:
+        print("SMOKE_FAIL: car wheels=%d" % world.car.wheels.size())
+        ok = false
+    if world.car.smoke_rl == null or world.car.smoke_rr == null:
+        print("SMOKE_FAIL: smoke particles missing")
+        ok = false
+    var eng := world.car.engine_player != null and world.car.engine_player.stream is AudioStreamOggVorbis
+    var skd := world.car.skid_player != null and world.car.skid_player.stream is AudioStreamOggVorbis
+    print("SMOKE audio: engine_ogg=%s skid_ogg=%s" % [str(eng), str(skd)])
+    if not eng or not skd:
+        print("SMOKE_FAIL: SKR audio streams not wired")
+        ok = false
+    # Preset round-trip (3D Car system): save -> list -> load -> delete.
+    world.car.max_torque = 2750.0
+    var saved: bool = world.car.save_preset("zz_smoke")
+    var in_list := false
+    for p in world.car.list_presets():
+        if p == "zz_smoke":
+            in_list = true
+    world.car.max_torque = 1000.0
+    var loaded: bool = world.car.load_preset("zz_smoke")
+    var torque_after: float = world.car.max_torque
+    world.car.delete_preset("zz_smoke")
+    var gone := true
+    for p in world.car.list_presets():
+        if p == "zz_smoke":
+            gone = false
+    print("SMOKE preset: save=%s list=%s load=%s torque=%.0f deleted=%s" % [
+        str(saved), str(in_list), str(loaded), torque_after, str(gone)])
+    if not saved or not in_list or not loaded or absf(torque_after - 2750.0) > 1.0 or not gone:
+        print("SMOKE_FAIL: preset round-trip broken")
+        ok = false
+
     if contacts < 4:
         print("SMOKE_FAIL: wheels not on ground (%d/4)" % contacts)
         ok = false

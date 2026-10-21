@@ -9,26 +9,39 @@ extends VehicleBody3D
 ## + speed-scaled downforce, per-wheel surface grip and impact audio events
 ## through the EventAudio addon.
 ##
+## v0.4.0 asset fusion:
+##  - Body visuals + tuning settings come from "3D Car With Settingspanel"
+##    (CC0): the car_model.glb low-poly car with per-part materials, body
+##    tinted green to keep the driver's livery. Its SettingsPanel preset
+##    system (user://3d_car_customizable/*.json) is ported 1:1 in
+##    scripts/settings_panel.gd and auto-loads the first preset on launch.
+##  - Input feel follows "Starter Kit Racing" (Kenney, MIT) vehicle.gd:
+##    lerped throttle/steer targets instead of raw keys (arcade-like
+##    response) on top of the realistic physics core.
+##  - Real engine / skid loops + drift smoke particles are the Starter Kit
+##    assets (audio/*.ogg, sprites/smoke.png).
+##
 ## Body frame: forward = +Z, up = +Y, left = +X — Godot's VehicleBody3D
 ## convention (positive engine_force drives +Z, verified empirically on
-## 4.7.2) which also matches the glTF model's native facing, so no visual
-## flip is needed. Positive VehicleWheel3D steering points the wheels toward
-## +X (car/screen LEFT when viewed from behind), so steer input is mapped as
-##  left - right  (fixes the v0.2.0 inverted steering on touch and keyboard).
+## 4.7.2). The glTF model faces -Z natively, so the visual root is yawed
+## 180°; positive VehicleWheel3D steering points the wheels toward +X (car
+## LEFT when viewed from behind), so steer input maps as  left - right
+## (fixes the v0.2.0 inverted steering on touch and keyboard).
 
 # ---- SRCoder Simple Car style tuning (kept names, retuned values) ----
 @export var max_steer := 0.55             # rad, low-speed steering lock
 @export var max_torque := 2600.0          # N per rear wheel at 0 rpm
 @export var max_brake_force := 95.0       # N·s impulse cap per front wheel
-@export var max_wheel_rpm := 950.0        # rear wheel rpm at force cutoff
+@export var max_wheel_rpm := 1150.0       # rear wheel rpm at force cutoff
+                                          # (0.32 m wheels: ~140 km/h top)
 @export var steer_damping := 3.0          # rad/s steering slew rate
 @export var front_wheel_grip := 2.8       # friction slip, front (understeer bias)
 @export var rear_wheel_grip := 2.2        # friction slip, rear wheels (RWD)
 
-const WHEEL_RADIUS := 0.48                # sedan wheel radius (0.3 model * 1.6)
-const REST_LENGTH := 0.42                 # suspension rest length
-const TRAVEL := 0.26                      # suspension compression allowance
-const STIFFNESS := 58.0
+const WHEEL_RADIUS := 0.32                # car_model.glb wheel mesh radius (asset tuning: 0.32)
+const REST_LENGTH := 0.35                 # suspension rest length
+const TRAVEL := 0.24                      # suspension compression allowance
+const STIFFNESS := 55.0
 const MAX_SUSP_FORCE := 12000.0
 const ROLL_INFLUENCE := 0.10              # low -> resists body roll (flat touge feel)
 const CD_A := 0.32                        # aero drag coefficient*area (x rho/2)
@@ -36,7 +49,13 @@ const DOWNFORCE_K := 1.15                 # N per (m/s)^2
 const DOWNFORCE_MAX := 5200.0
 const REVERSE_FORCE := 980.0              # N per rear wheel in reverse
 const REVERSE_VMAX := 9.0                 # m/s reverse cap
-const CAR_SCALE := 1.6                    # GLB model -> meters
+const ARCH_H := 0.49                      # car_model wheel-center height below body origin
+const SMOKE_DRIFT := 0.30                 # drift level that starts the tire smoke
+
+# Starter Kit Racing style input smoothing (lerped arcade response).
+const STEER_EASE := 7.0
+const THROTTLE_EASE := 5.0
+const BRAKE_EASE := 6.0
 
 var steer := 0.0
 var drift := 0.0                          # smoothed slide factor 0..1
@@ -55,6 +74,8 @@ var wheels: Array[VehicleWheel3D] = []    # FL, FR, RL, RR
 var cam: Camera3D
 var engine_player: AudioStreamPlayer
 var skid_player: AudioStreamPlayer
+var smoke_rl: GPUParticles3D
+var smoke_rr: GPUParticles3D
 
 var _throttle := 0.0
 var _brake := 0.0
@@ -80,14 +101,17 @@ func read_input() -> void:
         if controls_enabled:
                 # FIXED v0.3.0: left - right  (positive steering = turn left,
                 # so pressing the right button now turns the car right).
-                _steer_in = Input.get_action_strength("left") - Input.get_action_strength("right")
-                _throttle = Input.get_action_strength("gas")
-                _brake = Input.get_action_strength("brake")
+                # v0.4.0: Starter Kit Racing-style lerp toward the raw target gives
+                # the arcade-like eased response on touch and keyboard alike.
+                var target := Input.get_action_strength("left") - Input.get_action_strength("right")
+                _steer_in = lerpf(_steer_in, target, clampf(STEER_EASE * _dt(), 0.0, 1.0))
+                _throttle = lerpf(_throttle, Input.get_action_strength("gas"), clampf(THROTTLE_EASE * _dt(), 0.0, 1.0))
+                _brake = lerpf(_brake, Input.get_action_strength("brake"), clampf(BRAKE_EASE * _dt(), 0.0, 1.0))
                 _hand = Input.is_action_pressed("hand")
         else:
-                _steer_in = 0.0
-                _throttle = 0.0
-                _brake = 0.0
+                _steer_in = lerpf(_steer_in, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
+                _throttle = lerpf(_throttle, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
+                _brake = lerpf(_brake, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
                 _hand = false
 
 
@@ -178,8 +202,13 @@ func _physics_process(dt: float) -> void:
         drift = lerpf(drift, slide, clampf(7.0 * dt, 0.0, 1.0))
         lat_g = vF * angular_velocity.y / 9.81
 
+        _update_smoke(speed, dt)
         _update_camera(dt, vF)
         _update_audio(vF)
+
+
+func _dt() -> float:
+        return get_physics_process_delta_time()
 
 
 func _driving_wheels() -> Array[VehicleWheel3D]:
@@ -241,15 +270,28 @@ func _update_camera(dt: float, vF: float) -> void:
 
 func _update_audio(vF: float) -> void:
         if engine_player != null:
-                engine_player.pitch_scale = 0.62 + 1.15 * rpm_norm + 0.14 * _throttle
-                engine_player.volume_db = -20.0 + 9.0 * maxf(_throttle, rpm_norm * 0.7)
+                # Real engine loop (Starter Kit Racing, engine.ogg): pitch tracks
+                # rpm with a throttle kicker, volume follows load.
+                engine_player.pitch_scale = 0.55 + 1.35 * rpm_norm + 0.18 * _throttle
+                engine_player.volume_db = -24.0 + 11.0 * maxf(_throttle, rpm_norm * 0.7)
         if skid_player != null:
                 if grounded and drift > 0.18 and absf(vF) > 6.0:
-                        skid_player.volume_db = lerpf(-60.0, -12.0, clampf(drift, 0.0, 1.0))
+                        skid_player.volume_db = lerpf(-60.0, -10.0, clampf(drift, 0.0, 1.0))
+                        skid_player.pitch_scale = 0.9 + 0.5 * clampf(absf(vF) / 40.0, 0.0, 1.0)
                         if not skid_player.playing:
                                 skid_player.play()
                 else:
                         skid_player.volume_db = -60.0
+
+
+## Starter Kit Racing tire smoke: billboard GPUParticles at the rear wheels,
+## emitting while the car is sliding (same trigger as the skid loop).
+func _update_smoke(spd: float, dt: float) -> void:
+        if smoke_rl == null:
+                return
+        var emit := grounded and drift > SMOKE_DRIFT and spd > 8.0
+        smoke_rl.emitting = emit
+        smoke_rr.emitting = emit
 
 
 func set_pose(pos: Vector3, yaw: float) -> void:
@@ -282,54 +324,190 @@ func apply_card_mods(grip: float, power: float, rear: float) -> void:
         rear_release = rear
 
 
+# ------------------------------------------------------------ presets (3D Car)
+
+## Preset system ported from "3D Car With Settingspanel" (CC0): tuning JSON
+## files in user://3d_car_customizable/, first preset auto-loads on launch,
+## and the schema keys match the original asset so its presets stay usable.
+const PRESET_DIR := "user://3d_car_customizable/"
+const WHEEL_ORDER := ["front_left", "front_right", "rear_left", "rear_right"]
+
+
+func list_presets() -> Array[String]:
+        var names: Array[String] = []
+        var dir := DirAccess.open(PRESET_DIR)
+        if dir == null:
+                return names
+        dir.list_dir_begin()
+        var f := dir.get_next()
+        while f != "":
+                if not dir.current_is_dir() and f.ends_with(".json"):
+                        names.append(f.trim_suffix(".json"))
+                f = dir.get_next()
+        dir.list_dir_end()
+        names.sort()
+        return names
+
+
+func save_preset(pname: String) -> bool:
+        if pname.strip_edges().is_empty():
+                return false
+        DirAccess.make_dir_recursive_absolute(PRESET_DIR)
+        var data := {
+                "MAX_ENGINE_FORCE": max_torque,
+                "MAX_BRAKE": max_brake_force,
+                "MAX_STEERING": max_steer,
+                "STEERING_SPEED": steer_damping,
+                "mass": mass,
+                "wheel_names": ".".join(WHEEL_ORDER) + ".",
+        }
+        for i in 4:
+                var w := wheels[i]
+                if w == null:
+                        continue
+                data[WHEEL_ORDER[i]] = {
+                        "use_as_traction": w.use_as_traction,
+                        "use_as_steering": w.use_as_steering,
+                        "wheel_roll_influence": w.wheel_roll_influence,
+                        "wheel_radius": w.wheel_radius,
+                        "wheel_rest_length": w.wheel_rest_length,
+                        "wheel_friction_slip": w.wheel_friction_slip,
+                        "suspension_travel": w.suspension_travel,
+                        "suspension_stiffness": w.suspension_stiffness,
+                        "suspension_max_force": w.suspension_max_force,
+                        "damping_compression": w.damping_compression,
+                        "damping_relaxation": w.damping_relaxation,
+                }
+        var f := FileAccess.open(PRESET_DIR + pname.strip_edges() + ".json", FileAccess.WRITE)
+        if f == null:
+                return false
+        f.store_line(JSON.stringify(data, "\t"))
+        f.close()
+        return true
+
+
+func delete_preset(pname: String) -> void:
+        var path := PRESET_DIR + pname.strip_edges() + ".json"
+        if FileAccess.file_exists(path):
+                DirAccess.remove_absolute(path)
+
+
+func load_preset(pname: String) -> bool:
+        var f := FileAccess.open(PRESET_DIR + pname.strip_edges() + ".json", FileAccess.READ)
+        if f == null:
+                return false
+        var parsed = JSON.parse_string(f.get_as_text())
+        f.close()
+        if typeof(parsed) != TYPE_DICTIONARY:
+                return false
+        return apply_preset(parsed)
+
+
+## "weight" is kept for compatibility with the original asset's presets:
+## it mirrors mass (weight = mass * 9.81) — mass wins when both differ.
+func apply_preset(data: Dictionary) -> bool:
+        if data.has("MAX_ENGINE_FORCE"):
+                max_torque = float(data["MAX_ENGINE_FORCE"])
+        if data.has("MAX_BRAKE"):
+                max_brake_force = float(data["MAX_BRAKE"])
+        if data.has("MAX_STEERING"):
+                max_steer = float(data["MAX_STEERING"])
+        if data.has("STEERING_SPEED"):
+                steer_damping = float(data["STEERING_SPEED"])
+        if data.has("mass"):
+                mass = float(data["mass"])
+        elif data.has("weight"):
+                mass = float(data["weight"]) / 9.81
+        var ok := true
+        for i in 4:
+                var w := wheels[i]
+                if w == null or not data.has(WHEEL_ORDER[i]):
+                        continue
+                var wd: Dictionary = data[WHEEL_ORDER[i]]
+                if typeof(wd) != TYPE_DICTIONARY:
+                        ok = false
+                        continue
+                if wd.has("use_as_traction"):
+                        w.use_as_traction = bool(wd["use_as_traction"])
+                if wd.has("use_as_steering"):
+                        w.use_as_steering = bool(wd["use_as_steering"])
+                for key in ["wheel_roll_influence", "wheel_radius", "wheel_rest_length",
+                                "wheel_friction_slip", "suspension_travel",
+                                "suspension_stiffness", "suspension_max_force",
+                                "damping_compression", "damping_relaxation"]:
+                        if wd.has(key):
+                                w.set(key, float(wd[key]))
+        return ok
+
+
+## The original asset auto-loads the first preset on the list at launch.
+func _load_first_preset() -> void:
+        var names := list_presets()
+        if names.size() > 0:
+                if load_preset(names[0]):
+                        print("Preset loaded: ", names[0])
+                else:
+                        push_warning("Preset failed to parse: " + names[0])
+
+
 # ---------------------------------------------------------------- visuals
 
-## Sedan-sports model (srcoder SimpleCar asset, CC0, body recolored green).
-## The glTF faces +Z — exactly the VehicleBody3D drive direction — so the
-## visual root only carries the 1.6 m scale. Each GLB wheel mesh is
-## re-parented under a pivot node inside its VehicleWheel3D so the engine
-## drives suspension travel, steering and roll; the pivot keeps the scale
-## that the engine would otherwise overwrite on direct children.
+## car_model.glb from "3D Car With Settingspanel" (CC0). Godot 4.7's glTF
+## importer converts the model's *_wheel nodes into real VehicleWheel3D
+## nodes (with the wheel meshes already parented inside), so the visuals are
+## adopted as-is: each wheel is re-parented under this VehicleBody3D at the
+## 180°-yawed position (the glTF faces -Z, the body drives along +Z), and
+## re-tuned to the SRCoder-style suspension numbers. The Body material is
+## tinted green — the livery requested since v0.3.0 — and the body mesh is
+## lifted so the model's wheel arches line up with the physics wheel centers.
 func _build_visuals() -> void:
-        var car_scene: PackedScene = load("res://assets/car/sedan-sports.glb")
+        var car_scene: PackedScene = load("res://assets/car3d/car_model.glb")
         var vis := car_scene.instantiate() as Node3D
-        vis.scale = Vector3(CAR_SCALE, CAR_SCALE, CAR_SCALE)
         add_child(vis)
-        _make_materials_double_sided(vis)
+        _tint_body_green(vis)
 
-        var defs := [
-                ["wheel-front-left", Vector3(0.48, 0.0, 1.056), true],
-                ["wheel-front-right", Vector3(-0.48, 0.0, 1.056), true],
-                ["wheel-back-left", Vector3(0.48, 0.0, -1.056), false],
-                ["wheel-back-right", Vector3(-0.48, 0.0, -1.056), false],
-        ]
+        # Collect the importer-generated wheels by their glTF names, then
+        # adopt them in the FL, FR, RL, RR order the game logic expects.
+        var by_name := {}
+        for ch in vis.get_children():
+                if ch is VehicleWheel3D:
+                        by_name[String(ch.name)] = ch
+        var order := ["front_left", "front_right", "rear_left", "rear_right"]
         wheels = []
-        for d in defs:
-                var mesh := vis.find_child(d[0], true, false) as MeshInstance3D
-                var w := _make_wheel(d[1], d[2])
+        for nm in order:
+                var w := by_name.get(nm) as VehicleWheel3D
+                if w == null:
+                        push_warning("car_model.glb wheel missing: %s" % nm)
+                        continue
+                var glb_pos := w.position          # glTF space (forward = -Z)
+                vis.remove_child(w)
+                w.position = Vector3(-glb_pos.x, WHEEL_RADIUS + REST_LENGTH, -glb_pos.z)
+                var is_front := glb_pos.z < 0.0
+                w.use_as_steering = is_front
+                w.use_as_traction = not is_front
+                _tune_wheel(w)
+                add_child(w)
                 wheels.append(w)
-                if mesh != null:
-                        vis.remove_child(mesh)
-                        var pivot := Node3D.new()
-                        w.add_child(pivot)
-                        mesh.transform = Transform3D(Basis().scaled(Vector3.ONE * CAR_SCALE), Vector3.ZERO)
-                        pivot.add_child(mesh)
+
+        # Body visual: yaw PI (model -Z -> drive +Z), lift the arch line
+        # (model wheel centers sit ARCH_H below the model origin) onto the
+        # physics wheel centers.
+        vis.rotation.y = PI
+        vis.position = Vector3(0, WHEEL_RADIUS + ARCH_H, 0)
 
         var cs := CollisionShape3D.new()
         var shape := BoxShape3D.new()
-        shape.size = Vector3(1.9, 1.0, 4.0)
+        shape.size = Vector3(1.8, 1.15, 4.3)
         cs.shape = shape
-        cs.position = Vector3(0, 0.8, 0)
+        cs.position = Vector3(0, 0.72, 0)
         add_child(cs)
 
+        _build_smoke()
+        _load_first_preset()
 
-func _make_wheel(pos_xz: Vector3, steer: bool) -> VehicleWheel3D:
-        var w := VehicleWheel3D.new()
-        # Node origin = suspension top; wheel center rests REST_LENGTH below,
-        # matching the model wheel-center height (0.48 m) at rest.
-        w.position = Vector3(pos_xz.x, WHEEL_RADIUS + REST_LENGTH, pos_xz.z)
-        w.use_as_steering = steer
-        w.use_as_traction = not steer
+
+## Apply the v0.3.0 suspension tuning onto an imported VehicleWheel3D.
+func _tune_wheel(w: VehicleWheel3D) -> void:
         w.wheel_radius = WHEEL_RADIUS
         w.wheel_rest_length = REST_LENGTH
         w.suspension_travel = TRAVEL
@@ -338,8 +516,79 @@ func _make_wheel(pos_xz: Vector3, steer: bool) -> VehicleWheel3D:
         w.damping_compression = 0.88
         w.damping_relaxation = 1.05
         w.wheel_roll_influence = ROLL_INFLUENCE
-        add_child(w)
-        return w
+
+
+## Repaint every material named "Body" on the model in Atlas green.
+func _tint_body_green(n: Node) -> void:
+        if n is MeshInstance3D:
+                var mi := n as MeshInstance3D
+                for i in mi.get_surface_override_material_count():
+                        var m := mi.get_active_material(i)
+                        if m is BaseMaterial3D and m.resource_name == "Body":
+                                var tinted: BaseMaterial3D = m.duplicate()
+                                tinted.albedo_color = Color(0.16, 0.55, 0.24)
+                                mi.set_surface_override_material(i, tinted)
+        for c in n.get_children():
+                _tint_body_green(c)
+
+
+## Tire smoke material cloned from the Starter Kit Racing vehicle scene:
+## billboard quads over smoke.png with a soft alpha curve.
+func _build_smoke() -> void:
+        var mat := StandardMaterial3D.new()
+        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        mat.vertex_color_use_as_albedo = true
+        mat.albedo_texture = load("res://assets/skr/sprites/smoke.png")
+        mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+        mat.billboard_keep_scale = true
+        mat.disable_receive_shadows = true
+        mat.grow_amount = 0.5
+
+        var alpha := Curve.new()
+        alpha.add_point(Vector2(0.0, 0.0))
+        alpha.add_point(Vector2(0.5, 1.0))
+        alpha.add_point(Vector2(1.0, 0.0))
+        var alpha_tex := CurveTexture.new()
+        alpha_tex.curve = alpha
+
+        var scale_c := Curve.new()
+        scale_c.add_point(Vector2(0.0, 0.5))
+        scale_c.add_point(Vector2(0.5, 1.0))
+        scale_c.add_point(Vector2(1.0, 0.2))
+        var scale_tex := CurveTexture.new()
+        scale_tex.curve = scale_c
+
+        var pm := ParticleProcessMaterial.new()
+        pm.angle_min = -90.0
+        pm.angle_max = 90.0
+        pm.gravity = Vector3.ZERO
+        pm.damping_min = 1.0
+        pm.damping_max = 1.0
+        pm.scale_min = 0.3
+        pm.scale_max = 0.65
+        pm.scale_curve = scale_tex
+        pm.color = Color(0.37, 0.37, 0.42, 1.0)
+        pm.alpha_curve = alpha_tex
+
+        smoke_rl = _make_smoke_node(pm, mat, Vector3(0.82, 0.18, -1.29))
+        smoke_rr = _make_smoke_node(pm, mat, Vector3(-0.82, 0.18, -1.29))
+
+
+func _make_smoke_node(pm: ParticleProcessMaterial, mat: Material, pos: Vector3) -> GPUParticles3D:
+        var p := GPUParticles3D.new()
+        p.position = pos
+        p.process_material = pm
+        p.material_override = mat
+        p.amount = 36
+        p.lifetime = 0.6
+        p.fixed_fps = 30
+        p.emitting = false
+        var quad := QuadMesh.new()
+        quad.size = Vector2(0.9, 0.9)
+        p.draw_pass_1 = quad
+        add_child(p)
+        return p
 
 
 func _make_materials_double_sided(n: Node) -> void:
@@ -354,14 +603,22 @@ func _make_materials_double_sided(n: Node) -> void:
 
 
 func _build_audio() -> void:
+        # Starter Kit Racing real recordings; OGG imports default to no loop,
+        # so the loop flag is forced here at runtime.
         engine_player = AudioStreamPlayer.new()
-        engine_player.stream = AudioSynth.engine_loop()
-        engine_player.volume_db = -20.0
+        var eng: AudioStream = load("res://assets/skr/audio/engine.ogg")
+        if eng is AudioStreamOggVorbis:
+                (eng as AudioStreamOggVorbis).loop = true
+        engine_player.stream = eng
+        engine_player.volume_db = -24.0
         add_child(engine_player)
         engine_player.play()
 
         skid_player = AudioStreamPlayer.new()
-        skid_player.stream = AudioSynth.skid_loop()
+        var skd: AudioStream = load("res://assets/skr/audio/skid.ogg")
+        if skd is AudioStreamOggVorbis:
+                (skd as AudioStreamOggVorbis).loop = true
+        skid_player.stream = skd
         skid_player.volume_db = -60.0
         add_child(skid_player)
         skid_player.play()

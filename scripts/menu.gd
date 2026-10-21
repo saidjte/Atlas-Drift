@@ -62,8 +62,8 @@ func _build() -> void:
         var start := UIKit.make_button("ابدأ السباق", main.font_bold, 46)
         start.anchor_left = 0.5
         start.anchor_right = 0.5
-        start.anchor_top = 0.70
-        start.anchor_bottom = 0.70
+        start.anchor_top = 0.66
+        start.anchor_bottom = 0.66
         start.offset_left = -160
         start.offset_right = 160
         start.offset_top = -34
@@ -71,11 +71,23 @@ func _build() -> void:
         start.pressed.connect(func() -> void: main.start_race())
         root.add_child(start)
 
+        var settings_btn := UIKit.make_button("إعدادات السيارة", main.font_bold, 30)
+        settings_btn.anchor_left = 0.5
+        settings_btn.anchor_right = 0.5
+        settings_btn.anchor_top = 0.775
+        settings_btn.anchor_bottom = 0.775
+        settings_btn.offset_left = -170
+        settings_btn.offset_right = 170
+        settings_btn.offset_top = -26
+        settings_btn.offset_bottom = 34
+        settings_btn.pressed.connect(func() -> void: main.open_car_settings())
+        root.add_child(settings_btn)
+
         shadows_btn = UIKit.make_button("الظلال: مفعّلة", main.font_regular, 26)
         shadows_btn.anchor_left = 0.5
         shadows_btn.anchor_right = 0.5
-        shadows_btn.anchor_top = 0.82
-        shadows_btn.anchor_bottom = 0.82
+        shadows_btn.anchor_top = 0.86
+        shadows_btn.anchor_bottom = 0.86
         shadows_btn.offset_left = -140
         shadows_btn.offset_right = 140
         shadows_btn.offset_top = -20
@@ -87,8 +99,8 @@ func _build() -> void:
                 var quit := UIKit.make_button("خروج", main.font_regular, 26)
                 quit.anchor_left = 0.5
                 quit.anchor_right = 0.5
-                quit.anchor_top = 0.91
-                quit.anchor_bottom = 0.91
+                quit.anchor_top = 0.94
+                quit.anchor_bottom = 0.94
                 quit.offset_left = -90
                 quit.offset_right = 90
                 quit.offset_top = -16
