@@ -46,6 +46,10 @@ jobs:
           # Proper SDK layout so Godot's exporter finds apksigner for its own pass
           sudo mkdir -p /opt/android-sdk/build-tools
           sudo cp -r "$BTDIR" /opt/android-sdk/build-tools/35.0.0
+          curl -L -o /tmp/pt.zip "https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
+          unzip -o -q /tmp/pt.zip -d /tmp/pt
+          sudo cp -r /tmp/pt/platform-tools /opt/android-sdk/platform-tools
+          /opt/android-sdk/platform-tools/adb --version | head -1
           echo "BT=/opt/android-sdk/build-tools/35.0.0" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=/opt/android-sdk" >> "$GITHUB_ENV"
           /opt/android-sdk/build-tools/35.0.0/zipalign 2>&1 | head -1 || true
@@ -66,11 +70,13 @@ jobs:
           grep -c "atlasdrift.keystore" export_presets.cfg
 
       - name: Import project (headless)
-        run: godot --headless --path . --import 2>&1 | tail -20
+        run: |
+          set -eo pipefail
+          godot --headless --path . --import 2>&1 | tail -20
 
       - name: Export Android APK
         run: |
-          set -e
+          set -eo pipefail
           mkdir -p build
           godot --headless --path . --export-release "Android" build/AtlasDrift.apk 2>&1 | tail -30
           ls -la build/
@@ -85,7 +91,7 @@ jobs:
           KS_PASS="$(printf '%s' "$KS_PASS" | tr -d '[:space:]')"
           KS_ALIAS="$(printf '%s' "$KS_ALIAS" | tr -d '[:space:]')"
           KS_ALIAS_PASS="$(printf '%s' "$KS_ALIAS_PASS" | tr -d '[:space:]')"
-          BT=/opt/android-bt
+          BT="${BT:-/opt/android-sdk/build-tools/35.0.0}"
           "$BT/zipalign" -f -p 4 build/AtlasDrift.apk build/AtlasDrift.aligned.apk
           "$BT/apksigner" sign \
             --ks /tmp/atlasdrift.keystore \
