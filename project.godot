@@ -13,6 +13,10 @@ boot_splash/bg_color=Color(0.09, 0.11, 0.16, 1)
 boot_splash/show_image=false
 config/icon="res://icon.svg"
 
+[autoload]
+
+EventAudio="*res://addons/event_audio/scenes/event_audio_autoload.tscn"
+
 [audio]
 
 buses/default_bus_layout=""

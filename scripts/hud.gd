@@ -10,8 +10,12 @@ var count_l: Label
 var wrong_l: Label
 var drift_l: Label
 var debug_l: Label
+var card_l: Label
+var card_sub_l: Label
+var card_box: PanelContainer
 var fade: ColorRect
 var _msg_t := 0.0
+var _card_t := 0.0
 
 
 func setup(m: Node3D) -> void:
@@ -127,12 +131,50 @@ func _ready() -> void:
         fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
         root.add_child(fade)
 
+        # Lap-card popup (GodotCardManager bonus draw after each lap).
+        card_box = PanelContainer.new()
+        var sb := StyleBoxFlat.new()
+        sb.bg_color = Color(0.08, 0.10, 0.15, 0.92)
+        sb.corner_radius_top_left = 16
+        sb.corner_radius_top_right = 16
+        sb.corner_radius_bottom_left = 16
+        sb.corner_radius_bottom_right = 16
+        sb.border_width_top = 2
+        sb.border_width_bottom = 2
+        sb.border_width_left = 2
+        sb.border_width_right = 2
+        sb.content_margin_left = 26.0
+        sb.content_margin_right = 26.0
+        sb.content_margin_top = 14.0
+        sb.content_margin_bottom = 14.0
+        card_box.add_theme_stylebox_override("panel", sb)
+        card_box.anchor_left = 0.5
+        card_box.anchor_right = 0.5
+        card_box.anchor_top = 0.62
+        card_box.anchor_bottom = 0.62
+        card_box.visible = false
+        card_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        var vb := VBoxContainer.new()
+        vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        card_box.add_child(vb)
+        card_l = UIKit.make_label("", 40, Color(0.97, 0.95, 0.9), main.font_bold)
+        card_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        vb.add_child(card_l)
+        card_sub_l = UIKit.make_label("", 26, Color(0.8, 0.82, 0.88), main.font_regular)
+        card_sub_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        vb.add_child(card_sub_l)
+        root.add_child(card_box)
+
 
 func _process(dt: float) -> void:
         if _msg_t > 0.0:
                 _msg_t -= dt
                 if _msg_t <= 0.0:
                         msg_l.text = ""
+        if _card_t > 0.0:
+                _card_t -= dt
+                if _card_t <= 0.0:
+                        card_box.visible = false
 
 
 func update_speed(kph: float) -> void:
@@ -172,10 +214,31 @@ func set_debug(txt: String) -> void:
         debug_l.text = txt
 
 
+func clear_card() -> void:
+        _card_t = 0.0
+        card_box.visible = false
+
+
 func do_fade() -> void:
         var tw := create_tween()
         tw.tween_property(fade, "color:a", 1.0, 0.18)
         tw.tween_property(fade, "color:a", 0.0, 0.30)
+
+
+## Lap-card popup: title line (value + suit + points), subtitle (modifier),
+## colored border matching the suit.
+func show_card(title: String, subtitle: String, col: Color) -> void:
+        card_l.text = title
+        card_sub_l.text = subtitle
+        card_l.add_theme_color_override("font_color", col)
+        var sb: StyleBoxFlat = card_box.get_theme_stylebox("panel").duplicate()
+        sb.border_color = col
+        card_box.add_theme_stylebox_override("panel", sb)
+        card_box.visible = true
+        _card_t = 3.2
+        card_box.reset_size()
+        await get_tree().process_frame
+        card_box.position.x = -card_box.size.x * 0.5
 
 
 func _fmt(t: float) -> String:

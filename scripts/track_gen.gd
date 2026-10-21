@@ -253,14 +253,17 @@ func _build_rails() -> void:
         mi.material_override = _mat_vc_ds
         add_child(mi)
 
-        # Rail collision: one body per side, backface-safe (visible rails only).
+        # Rail collision: one body per side, backface-safe. The invisible
+        # collision face extends DOWN to the road surface (the visual rail
+        # starts 0.25 m up for the post gap) — otherwise the car body can
+        # slide under the rail and end up high-centered on top of it.
         for side in [-1.0, 1.0]:
                 var faces := PackedVector3Array()
                 for i in N:
                         var j := (i + 1) % N
-                        var b0 := _rail_base(i, side) + Vector3.UP * 0.25
+                        var b0 := _rail_base(i, side) + Vector3.UP * 0.02
                         var t0 := _rail_base(i, side) + Vector3.UP * (0.25 + RAIL_H)
-                        var b1 := _rail_base(j, side) + Vector3.UP * 0.25
+                        var b1 := _rail_base(j, side) + Vector3.UP * 0.02
                         var t1 := _rail_base(j, side) + Vector3.UP * (0.25 + RAIL_H)
                         for v in [b0, t0, t1, b0, t1, b1]:
                                 faces.append(v)
@@ -586,7 +589,9 @@ func toggle_shadows() -> bool:
 func pose_at(i: int) -> Dictionary:
         var idx := (i + N) % N
         var tg := tans[idx]
-        var yaw := atan2(-tg.x, -tg.z)
+        # Car faces +Z (VehicleBody3D drive direction), so yaw orients +Z
+        # along the tangent: basis.z = R_y(yaw) * (0,0,1) = (sin, 0, cos).
+        var yaw := atan2(tg.x, tg.z)
         return {"pos": pts[idx], "yaw": yaw}
 
 
