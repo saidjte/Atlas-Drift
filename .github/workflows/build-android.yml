@@ -10,7 +10,7 @@ env:
 
 jobs:
   buildAndroid:
-    name: Build APK (Godot ${{ env.GODOT_VERSION }})
+    name: Build APK (Godot 4.7.2)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
