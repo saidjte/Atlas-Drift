@@ -1,0 +1,19 @@
+# Godot
+.godot/
+*.tmp
+
+# Builds
+build/
+export/
+*.apk
+*.aab
+
+# Never commit signing material
+*.keystore
+*.jks
+*.p12
+*.pem
+keystore-creds.txt
+
+# OS
+.DS_Store

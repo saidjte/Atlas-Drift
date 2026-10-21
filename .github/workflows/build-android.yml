@@ -1,0 +1,106 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  buildAndroid:
+    name: Build APK (Godot ${{ env.GODOT_VERSION }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # apksigner is a Java tool
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Godot editor + export templates
+        run: |
+          set -e
+          V="${GODOT_VERSION}"
+          curl -L -o /tmp/godot.zip "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_linux.x86_64.zip"
+          unzip -o -q /tmp/godot.zip -d /tmp/godot-bin
+          sudo install -m 755 /tmp/godot-bin/Godot_v${V}-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+          curl -L -o /tmp/templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "${HOME}/.local/share/godot/export_templates/${V}.stable"
+          unzip -o -q /tmp/templates.tpz -d /tmp/tpl
+          mv /tmp/tpl/templates/* "${HOME}/.local/share/godot/export_templates/${V}.stable/"
+          ls "${HOME}/.local/share/godot/export_templates/${V}.stable/" | head -5
+
+      - name: Install Android build-tools (zipalign + apksigner)
+        run: |
+          set -e
+          curl -L -o /tmp/bt.zip "https://dl.google.com/android/repository/build-tools_r35_linux.zip"
+          unzip -o -q /tmp/bt.zip -d /tmp/bt
+          BTDIR=$(find /tmp/bt -maxdepth 1 -type d | tail -1)
+          # Proper SDK layout so Godot's exporter finds apksigner for its own pass
+          sudo mkdir -p /opt/android-sdk/build-tools
+          sudo cp -r "$BTDIR" /opt/android-sdk/build-tools/35.0.0
+          echo "BT=/opt/android-sdk/build-tools/35.0.0" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=/opt/android-sdk" >> "$GITHUB_ENV"
+          /opt/android-sdk/build-tools/35.0.0/zipalign 2>&1 | head -1 || true
+
+      - name: Decode release keystore and inject into export preset
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_FILE }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS_NAME }}
+          KS_ALIAS_PASS: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: |
+          set -e
+          printf '%s' "$KS_B64" | base64 -d > /tmp/atlasdrift.keystore
+          KS_PASS="$(printf '%s' "$KS_PASS" | tr -d '[:space:]')"
+          KS_ALIAS="$(printf '%s' "$KS_ALIAS" | tr -d '[:space:]')"
+          KS_ALIAS_PASS="$(printf '%s' "$KS_ALIAS_PASS" | tr -d '[:space:]')"
+          sed -i "s|__KS_PATH__|/tmp/atlasdrift.keystore|; s|__KS_USER__|${KS_ALIAS}|; s|__KS_PASS__|${KS_PASS}|" export_presets.cfg
+          grep -c "atlasdrift.keystore" export_presets.cfg
+
+      - name: Import project (headless)
+        run: godot --headless --path . --import 2>&1 | tail -20
+
+      - name: Export Android APK
+        run: |
+          set -e
+          mkdir -p build
+          godot --headless --path . --export-release "Android" build/AtlasDrift.apk 2>&1 | tail -30
+          ls -la build/
+
+      - name: Zipalign + sign with stable release key
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS_NAME }}
+          KS_ALIAS_PASS: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: |
+          set -e
+          KS_PASS="$(printf '%s' "$KS_PASS" | tr -d '[:space:]')"
+          KS_ALIAS="$(printf '%s' "$KS_ALIAS" | tr -d '[:space:]')"
+          KS_ALIAS_PASS="$(printf '%s' "$KS_ALIAS_PASS" | tr -d '[:space:]')"
+          BT=/opt/android-bt
+          "$BT/zipalign" -f -p 4 build/AtlasDrift.apk build/AtlasDrift.aligned.apk
+          "$BT/apksigner" sign \
+            --ks /tmp/atlasdrift.keystore \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$KS_ALIAS_PASS" \
+            --out build/AtlasDrift-signed.apk build/AtlasDrift.aligned.apk
+          "$BT/apksigner" verify --print-certs build/AtlasDrift-signed.apk | head -6
+          rm -f build/AtlasDrift.apk build/AtlasDrift.aligned.apk
+          mv build/AtlasDrift-signed.apk build/AtlasDrift.apk
+          ls -la build/
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-Drift-APK
+          path: build/AtlasDrift.apk
+          if-no-files-found: error
