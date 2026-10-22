@@ -1,5 +1,5 @@
 extends CanvasLayer
-## Procedural multi-touch controls, anchored to the real viewport corners so
+## Multi-touch controls, anchored to the real viewport corners so
 ## the layout holds on any aspect ratio (16:9 up to 21:9+ phones).
 ##
 ## Layout (universal driving ergonomics, independent of UI RTL):
@@ -7,13 +7,13 @@ extends CanvasLayer
 ##   bottom-right : gas ▲ (corner), brake ▼ (left of gas), handbrake ↗ above
 ##                  gas, reverse ◄▼ above the brake (v0.6.0)
 ##
-## Arrow convention: arrow_tex() draws an UP-pointing triangle at angle 0 and
-## Godot 2D rotates positive angles CLOCKWISE on screen, so:
-##   ◀ = -PI/2   ▶ = +PI/2   ▲ = 0   ▼ = PI   ↗ = +PI/4
-## (v0.1.0 shipped with swapped angles - steering showed up/down arrows and
-## the pedals showed left arrows, which made the layout feel broken.)
+## v0.7.0 ("الغي التوليد البرمجي وقت التشغيل"): every texture here is a BAKED
+## PNG file (tools/bake_ui.gd → res://assets/ui/*.png) — the old per-pixel
+## GDScript loops (6 x 256x256 set_pixel) are gone. The arrows are pre-rotated
+## in the files themselves: ◀ left, ▶ right, ▲ up (gas), ▼ down (brake +
+## reverse), ↗ up-right (handbrake).
 
-const TEX_D := 256   # all textures generated once at this size, scaled per button
+const TEX_D := 256   # baked PNG size (assets/ui/*.png), scaled per button
 
 var _btns := {}
 var _name_labels := {}
@@ -26,18 +26,16 @@ func _ready() -> void:
         if not _touch_ok:
                 visible = false
                 return
-        var idle_col := Color(0.16, 0.19, 0.27, 0.62)
-        var ring_col := Color(0.85, 0.68, 0.25, 0.85)
-        var press_col := Color(0.95, 0.72, 0.20, 0.80)
-        var idle := UIKit.circle_tex(TEX_D, idle_col, ring_col)
-        var pressed := UIKit.circle_tex(TEX_D, press_col, Color(1, 0.95, 0.7, 0.95))
+        # v0.7.0: file loads only — no runtime texture generation.
+        var idle: Texture2D = load("res://assets/ui/btn_idle.png")
+        var pressed: Texture2D = load("res://assets/ui/btn_pressed.png")
 
-        _add_btn("left", -PI / 2.0, idle, pressed, "")
-        _add_btn("right", PI / 2.0, idle, pressed, "")
-        _add_btn("brake", PI, idle, pressed, "فرامل")
-        _add_btn("gas", 0.0, idle, pressed, "بنزين")
-        _add_btn("hand", PI / 4.0, idle, pressed, "انزياح")
-        _add_btn("reverse", PI, idle, pressed, "رجوع")
+        _add_btn("left", load("res://assets/ui/arrow_left.png"), idle, pressed, "")
+        _add_btn("right", load("res://assets/ui/arrow_right.png"), idle, pressed, "")
+        _add_btn("brake", load("res://assets/ui/arrow_down.png"), idle, pressed, "فرامل")
+        _add_btn("gas", load("res://assets/ui/arrow_up.png"), idle, pressed, "بنزين")
+        _add_btn("hand", load("res://assets/ui/arrow_up_right.png"), idle, pressed, "انزياح")
+        _add_btn("reverse", load("res://assets/ui/arrow_down.png"), idle, pressed, "رجوع")
 
         _layout()
         get_viewport().size_changed.connect(_layout)
@@ -53,7 +51,7 @@ func set_race_mode(on: bool) -> void:
         visible = _touch_ok and on
 
 
-func _add_btn(action: String, arrow_angle: float, idle: Texture2D, pressed: Texture2D, label_text: String) -> void:
+func _add_btn(action: String, arrow_tex: Texture2D, idle: Texture2D, pressed: Texture2D, label_text: String) -> void:
         var b := TouchScreenButton.new()
         b.texture_normal = idle
         b.texture_pressed = pressed
@@ -63,7 +61,7 @@ func _add_btn(action: String, arrow_angle: float, idle: Texture2D, pressed: Text
         add_child(b)
 
         var arrow := TextureRect.new()
-        arrow.texture = UIKit.arrow_tex(TEX_D, Color(0.95, 0.92, 0.82, 0.85), arrow_angle)
+        arrow.texture = arrow_tex
         arrow.stretch_mode = TextureRect.STRETCH_SCALE
         arrow.size = Vector2(TEX_D, TEX_D)
         arrow.position = Vector2.ZERO

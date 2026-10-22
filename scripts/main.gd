@@ -1,7 +1,7 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.6.1"
+const GAME_VERSION := "0.7.0"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
@@ -41,29 +41,21 @@ func _use_async_world() -> bool:
         return not ("--smoke" in OS.get_cmdline_user_args())
 
 
-## v0.6.1 FIX ("الضغط على أي زر في القائمة يتسبب بتشنج اللعبة"): the whole
-## world used to be built in ONE frame the first time the user pressed
-## "ابدأ السباق" or "إعدادات السيارة" — several seconds of total freeze on
-## a phone. Now the world builds in the background in small chunks while
-## the menu is on screen, with the start button showing progress. By the
-## time the player taps anything, the world is usually already there.
+## v0.7.0 ("الغي التوليد البرمجي وقت التشغيل"): the world is BAKED into
+## files (world_track.scn + centerline.res), so "building" it is now a single
+## fast file load — no procedural generation on the phone at all. The load
+## still runs behind the menu with a couple of frame yields, and both shadow
+## shader variants are prewarmed while the menu covers the screen.
 func _prebuild_world() -> void:
         var game_script := load("res://scripts/game.gd")
         world = game_script.new()
         world.setup(self)
         add_child(world)
-        menu.set_building(true, 5)
         await get_tree().process_frame
-        menu.set_building(true, 15)
-        world.track.build_phase_a(true)   # centerline + Road Generator mesh/collision
+        menu.set_building(true, 40)
+        world.build_track(true)   # one baked-scene file load (~tens of ms)
         await get_tree().process_frame
-        menu.set_building(true, 45)
-        world.track.build_phase_b()       # rails + skirt/terrain
-        await get_tree().process_frame
-        menu.set_building(true, 65)
-        world.track.build_phase_c()       # paddock + scenery + gates + environment
-        await get_tree().process_frame
-        menu.set_building(true, 85)
+        menu.set_building(true, 70)
         world.build_car_and_ui()
         await get_tree().process_frame
         # Prewarm BOTH shadow shader variants while the menu covers the
@@ -94,27 +86,28 @@ func _await_world_ready() -> void:
                 _ensure_world()
 
 
-## Event Audio addon (addons/event_audio, autoload "EventAudio"): register a
-## runtime-built EAEventBank. All discrete game SFX go through trigger tags;
-## the tag hierarchy falls back right-to-left (e.g. "race+best" -> "race").
-## v0.4.0: the impact one-shot is the real Starter Kit Racing impact.ogg
-## (falls back to the synthesized thud if the asset is missing).
+## Event Audio addon (addons/event_audio, autoload "EventAudio"): register an
+## EAEventBank built from PRE-BAKED WAV files (tools/bake_sfx.gd froze the
+## old runtime synthesis into res://assets/audio/sfx/*.wav — the phone only
+## loads files, it never synthesizes). All discrete game SFX go through
+## trigger tags; the tag hierarchy falls back right-to-left
+## (e.g. "race+best" -> "race").
 func _setup_event_audio() -> void:
         var ea := get_node_or_null("/root/EventAudio")
         if ea == null:
                 return
         var bank := EAEventBank.new()
-        _add_event(bank, "ui+countdown", AudioSynth.beep(392.0, 0.16, 0.55), -6.0)
-        _add_event(bank, "ui+go", AudioSynth.beep(784.0, 0.5, 0.6), -4.0)
-        _add_event(bank, "race+checkpoint", AudioSynth.beep(660.0, 0.2, 0.5), -8.0, 0.95, 1.1)
-        _add_event(bank, "race+lap", AudioSynth.chime(), -6.0)
-        _add_event(bank, "race+best", AudioSynth.fanfare(), -4.0)
-        _add_event(bank, "race+card", AudioSynth.beep(880.0, 0.3, 0.35), -10.0, 0.98, 1.06)
+        _add_event(bank, "ui+countdown", load("res://assets/audio/sfx/ui_countdown.wav"), -6.0)
+        _add_event(bank, "ui+go", load("res://assets/audio/sfx/ui_go.wav"), -4.0)
+        _add_event(bank, "race+checkpoint", load("res://assets/audio/sfx/race_checkpoint.wav"), -8.0, 0.95, 1.1)
+        _add_event(bank, "race+lap", load("res://assets/audio/sfx/race_lap.wav"), -6.0)
+        _add_event(bank, "race+best", load("res://assets/audio/sfx/race_best.wav"), -4.0)
+        _add_event(bank, "race+card", load("res://assets/audio/sfx/race_card.wav"), -10.0, 0.98, 1.06)
         var impact: AudioStream = load("res://assets/skr/audio/impact.ogg")
         if impact == null:
-                impact = AudioSynth.thud()
+                impact = load("res://assets/audio/sfx/car_thud.wav")
         _add_event(bank, "car+impact", impact, -6.0, 0.85, 1.2)
-        _add_event(bank, "race+wrong", AudioSynth.wrong_buzz(), -6.0)
+        _add_event(bank, "race+wrong", load("res://assets/audio/sfx/race_wrong.wav"), -6.0)
         ea.register_event_bank(bank)
 
 
@@ -399,14 +392,23 @@ func _smoke_test() -> void:
     var lap_t: float = world.lap_time
     print("SMOKE final: %d kph idx=%d lap_time=%.1f best=%.1f" % [int(s2), i2, lap_t, world.best_lap])
 
-    # --- v0.4.0 asset checks ---
+    # --- v0.4.0 asset checks + v0.7.0 baked-world checks ---
     var ok := true
+    var baked_ok: bool = world.track.data != null \
+            and world.track.road_container != null \
+            and world.track.build_ms > 0
+    print("SMOKE baked: data=%s road=%s load_ms=%d" % [
+        str(world.track.data != null), str(world.track.road_container != null),
+        world.track.build_ms])
     var segs := -1
     if world.track.road_container != null:
-        segs = world.track.road_container.get_segments().size()
-    print("SMOKE roadgen: segments=%d" % segs)
+        segs = get_tree().get_nodes_in_group("road").size()
+    print("SMOKE roadgen: baked_collision_bodies=%d" % segs)
     if segs < 100:
-        print("SMOKE_FAIL: Road Generator segments missing (%d)" % segs)
+        print("SMOKE_FAIL: baked road collision missing (%d)" % segs)
+        ok = false
+    if not baked_ok:
+        print("SMOKE_FAIL: baked world incomplete")
         ok = false
     var cells := -1
     if world.track.paddock != null:

@@ -621,47 +621,14 @@ func _tint_body_green(n: Node) -> void:
                 _tint_body_green(c)
 
 
-## Tire smoke material cloned from the Starter Kit Racing vehicle scene:
-## billboard quads over smoke.png with a soft alpha curve.
+## Tire smoke: the process/surface materials are PRE-BAKED resource files
+## (tools/bake_fx.gd → res://assets/fx/smoke_*.tres) — v0.7.0 removed the
+## runtime Curve/CurveTexture/ParticleProcessMaterial construction.
+## Rear-wheel positions come straight from the adopted physics wheels
+## (physical rear = the glb nodes named front_*, z = -1.544).
 func _build_smoke() -> void:
-        var mat := StandardMaterial3D.new()
-        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-        mat.vertex_color_use_as_albedo = true
-        mat.albedo_texture = load("res://assets/skr/sprites/smoke.png")
-        mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-        mat.billboard_keep_scale = true
-        mat.disable_receive_shadows = true
-        mat.grow_amount = 0.5
-
-        var alpha := Curve.new()
-        alpha.add_point(Vector2(0.0, 0.0))
-        alpha.add_point(Vector2(0.5, 1.0))
-        alpha.add_point(Vector2(1.0, 0.0))
-        var alpha_tex := CurveTexture.new()
-        alpha_tex.curve = alpha
-
-        var scale_c := Curve.new()
-        scale_c.add_point(Vector2(0.0, 0.5))
-        scale_c.add_point(Vector2(0.5, 1.0))
-        scale_c.add_point(Vector2(1.0, 0.2))
-        var scale_tex := CurveTexture.new()
-        scale_tex.curve = scale_c
-
-        var pm := ParticleProcessMaterial.new()
-        pm.angle_min = -90.0
-        pm.angle_max = 90.0
-        pm.gravity = Vector3.ZERO
-        pm.damping_min = 1.0
-        pm.damping_max = 1.0
-        pm.scale_min = 0.3
-        pm.scale_max = 0.65
-        pm.scale_curve = scale_tex
-        pm.color = Color(0.37, 0.37, 0.42, 1.0)
-        pm.alpha_curve = alpha_tex
-
-        # Rear-wheel positions come straight from the adopted physics wheels
-        # (physical rear = the glb nodes named front_*, z = -1.544).
+        var pm: ParticleProcessMaterial = load("res://assets/fx/smoke_process.tres")
+        var mat: StandardMaterial3D = load("res://assets/fx/smoke_surface.tres")
         smoke_rl = _make_smoke_node(pm, mat, Vector3(0.82, 0.18, -1.544))
         smoke_rr = _make_smoke_node(pm, mat, Vector3(-0.82, 0.18, -1.544))
 

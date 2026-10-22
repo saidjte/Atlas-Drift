@@ -23,7 +23,7 @@ func _run() -> void:
 
         var segs := -1
         if tg.road_container != null:
-                segs = tg.road_container.get_segments().size()
+                segs = get_nodes_in_group("road").size()
         print("DIAG segments=%d samples=%d total_len=%.0f" % [segs, TrackGen.N, tg.total_len])
 
         var space := root.get_world_3d().direct_space_state

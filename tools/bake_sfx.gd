@@ -1,38 +1,54 @@
-class_name AudioSynth
-extends Object
-## Runtime-synthesized sounds (no audio files shipped).
+extends SceneTree
+## v0.7.0 SFX BAKER — replaces ALL runtime WAV synthesis with files.
+##
+##   godot --headless --path . -s res://tools/bake_sfx.gd
+##
+## The old AudioSynth class generated every sound buffer in GDScript loops on
+## the phone at startup. This tool runs the exact same synthesis ONCE here and
+## saves real WAV files into res://assets/audio/sfx/ — at runtime the game
+## just load()s them like any other asset.
 
 const RATE := 22050
+const OUT := "res://assets/audio/sfx/"
 
 
-static func engine_loop() -> AudioStreamWAV:
-        var frames := RATE / 2 # 0.5 s seamless-ish loop
-        var data := PackedByteArray()
-        data.resize(frames * 2)
-        for i in frames:
-                var t := float(i) / float(RATE)
-                var v := 0.0
-                v += 0.50 * _saw(t * 50.0)
-                v += 0.28 * _saw(t * 100.0 + 0.13)
-                v += 0.12 * sin(TAU * 25.0 * t)
-                v += 0.14 * _dnoise(i)
-                data.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 30000.0))
-        return _wav(data, true)
+func _initialize() -> void:
+        _run.call_deferred()
 
 
-static func skid_loop() -> AudioStreamWAV:
-        var frames := RATE * 2 / 5 # 0.4 s
-        var data := PackedByteArray()
-        data.resize(frames * 2)
-        var prev := 0.0
-        for i in frames:
-                var n := _dnoise(i * 7 + 13)
-                prev = prev * 0.82 + n * 0.18 # cheap low-pass
-                data.encode_s16(i * 2, int(clampf(prev * 2.4, -1.0, 1.0) * 26000.0))
-        return _wav(data, true)
+func _run() -> void:
+        DirAccess.make_dir_recursive_absolute(OUT)
+        var items := {
+                "ui_countdown": beep(392.0, 0.16, 0.55),
+                "ui_go": beep(784.0, 0.5, 0.6),
+                "race_checkpoint": beep(660.0, 0.2, 0.5),
+                "race_lap": chime(),
+                "race_best": fanfare(),
+                "race_card": beep(880.0, 0.3, 0.35),
+                "race_wrong": wrong_buzz(),
+                "car_thud": thud(),
+        }
+        var ok := true
+        for k: String in items:
+                var ws: AudioStreamWAV = items[k]
+                var path := OUT + k + ".wav"
+                var err := ws.save_to_wav(path)
+                if err != OK:
+                        push_error("BAKE sfx: %s failed (%d)" % [path, err])
+                        ok = false
+                else:
+                        print("BAKE sfx: %s (%d frames)" % [path, ws.data.size() / 2])
+        if ok:
+                print("BAKE_SFX_OK")
+                quit(0)
+        else:
+                quit(1)
 
 
-static func beep(freq: float, dur: float, vol := 0.6) -> AudioStreamWAV:
+# ---- the exact synthesis code that used to run on the phone (moved from
+# scripts/audio_synth.gd, unchanged formulas) ----
+
+func beep(freq: float, dur: float, vol := 0.6) -> AudioStreamWAV:
         var frames := int(RATE * dur)
         var data := PackedByteArray()
         data.resize(frames * 2)
@@ -46,8 +62,7 @@ static func beep(freq: float, dur: float, vol := 0.6) -> AudioStreamWAV:
         return _wav(data, false)
 
 
-## Two-tone positive chime (lap complete).
-static func chime() -> AudioStreamWAV:
+func chime() -> AudioStreamWAV:
         var dur := 0.55
         var frames := int(RATE * dur)
         var data := PackedByteArray()
@@ -65,8 +80,7 @@ static func chime() -> AudioStreamWAV:
         return _wav(data, false)
 
 
-## Three-note rising fanfare (new best lap).
-static func fanfare() -> AudioStreamWAV:
+func fanfare() -> AudioStreamWAV:
         var notes := [523.0, 659.0, 784.0]
         var dur := 0.9
         var frames := int(RATE * dur)
@@ -85,8 +99,7 @@ static func fanfare() -> AudioStreamWAV:
         return _wav(data, false)
 
 
-## Low impact thud (collisions) — decaying 85 Hz body + filtered noise.
-static func thud() -> AudioStreamWAV:
+func thud() -> AudioStreamWAV:
         var dur := 0.22
         var frames := int(RATE * dur)
         var data := PackedByteArray()
@@ -102,8 +115,7 @@ static func thud() -> AudioStreamWAV:
         return _wav(data, false)
 
 
-## Dissonant double-buzz (wrong way warning).
-static func wrong_buzz() -> AudioStreamWAV:
+func wrong_buzz() -> AudioStreamWAV:
         var dur := 0.42
         var frames := int(RATE * dur)
         var data := PackedByteArray()
@@ -116,16 +128,12 @@ static func wrong_buzz() -> AudioStreamWAV:
         return _wav(data, false)
 
 
-static func _saw(cycles: float) -> float:
-        return fmod(cycles, 1.0) * 2.0 - 1.0
-
-
-static func _dnoise(i: int) -> float:
+func _dnoise(i: int) -> float:
         var v := sin(float(i) * 12.9898) * 43758.5453
         return (v - floor(v)) * 2.0 - 1.0
 
 
-static func _wav(data: PackedByteArray, loop: bool) -> AudioStreamWAV:
+func _wav(data: PackedByteArray, loop: bool) -> AudioStreamWAV:
         var ws := AudioStreamWAV.new()
         ws.format = AudioStreamWAV.FORMAT_16_BITS
         ws.mix_rate = RATE
