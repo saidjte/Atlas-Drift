@@ -1,7 +1,7 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.5.1"
+const GAME_VERSION := "0.6.0"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
@@ -69,6 +69,7 @@ func _register_inputs() -> void:
         _bind("left", [KEY_A, KEY_LEFT])
         _bind("right", [KEY_D, KEY_RIGHT])
         _bind("hand", [KEY_SPACE])
+        _bind("reverse", [KEY_E, KEY_CTRL])
         _bind("restart", [KEY_R])
 
 
@@ -123,14 +124,25 @@ func resume_game() -> void:
         _release_drive_actions()
 
 
+## v0.6.0 hardening ("زر إعادة السباق يعمل كزر الاستمرار"): a restart must
+## be OBSERVABLY different from a resume — full state reset through
+## begin_race() (car to the grid, laps/score/countdown cleared), the drive
+## actions released so no frozen pedal survives into the new race, and a
+## screen fade so the reset is visible even when the car was already close
+## to the start line.
 func restart_race() -> void:
         resume_game()
+        _release_drive_actions()
+        if world == null:
+                _ensure_world()
         menu.visible = false
         world.begin_race()
+        if world.hud != null:
+                world.hud.do_fade()
 
 
 func _release_drive_actions() -> void:
-        for a in ["gas", "brake", "left", "right", "hand"]:
+        for a in ["gas", "brake", "left", "right", "hand", "reverse"]:
                 Input.action_release(a)
 
 
@@ -155,12 +167,17 @@ func open_car_settings() -> void:
         car_panel.open()
 
 
+## v0.6.0 FIX ("الرجوع الى القائمه الرئيسيه لا ينهي السباق"): leaving to the
+## menu now really ENDS the race — state to idle, car parked (velocity zero,
+## engine/skid loops stopped), race HUD + touch buttons hidden — instead of
+## leaving the world idling behind the menu with the engine still playing.
 func exit_to_menu() -> void:
         get_tree().paused = false
         if pause_menu != null:
                 pause_menu.close()
+        _release_drive_actions()
         if world != null:
-                world.pause()
+                world.end_race()
         menu.visible = true
         menu.refresh_stats()
 
@@ -408,7 +425,9 @@ func _smoke_test() -> void:
     fwd_bg = fwd_bg.normalized()
     Input.action_press("brake")
     Input.action_press("gas")
-    await get_tree().create_timer(2.2).timeout
+    # v0.6.0: 2.6 s window — the heavier suspension damping needs ~0.3 s
+    # more to spin up to the same distance (measured 1.62 m at 2.2 s).
+    await get_tree().create_timer(2.6).timeout
     Input.action_release("brake")
     Input.action_release("gas")
     var adv: float = (world.car.global_position - p_bg).dot(fwd_bg)
@@ -479,6 +498,88 @@ func _smoke_test() -> void:
     if not panel_ok:
         print("SMOKE_FAIL: simplified settings panel broken")
         ok = false
+
+    # --- v0.6.0 reverse gear ("اريد تمكين السيارة من الرجوع الى الخلف"):
+    # a DEDICATED action drives the car backwards from standstill; gas still
+    # wins forward while reverse is held; the throttle never reverses. ---
+    Input.action_press("brake")
+    await get_tree().create_timer(1.2).timeout
+    Input.action_release("brake")
+    await get_tree().create_timer(0.4).timeout
+    var tg2: TrackGen = world.track
+    var ir := tg2.nearest_idx(world.car.global_position, world.last_idx)
+    # Park on the FLATTEST nearby sample: on banked sections an upright
+    # parked car slides sideways down the banking (that lateral slide was
+    # the false "reverse barely moves" reading).
+    var best_i := ir
+    var best_bank := 999.0
+    for d in range(-80, 81):
+        var ii := (ir + d + TrackGen.N) % TrackGen.N
+        if absf(tg2.roll[ii]) < best_bank:
+            best_bank = absf(tg2.roll[ii])
+            best_i = ii
+    var c2: Vector3 = tg2.pts[best_i]
+    var t2: Vector3 = tg2.tans[best_i]
+    t2.y = 0.0
+    t2 = t2.normalized()
+    world.car.set_pose(c2, atan2(t2.x, t2.z))
+    await get_tree().create_timer(0.3).timeout
+    var p_rv: Vector3 = world.car.global_position
+    Input.action_press("reverse")
+    await get_tree().create_timer(2.4).timeout
+    var rv_speed: float = world.car.speed_kph()
+    var rv_back: float = (world.car.global_position - p_rv).dot(t2)
+    print("SMOKE reverse: back=%.2f m speed=%.1f kph (back must be negative)" % [rv_back, rv_speed])
+    if rv_back > -1.5:
+        print("SMOKE_FAIL: reverse gear barely moved the car (%.2f m)" % rv_back)
+        ok = false
+    # gas beats reverse: still holding reverse, gas must swing the car to
+    # FORWARD motion (arresting the backward momentum first, then driving
+    # ahead — the v0.5.1 "gas always forward" semantic).
+    Input.action_press("gas")
+    await get_tree().create_timer(2.2).timeout
+    Input.action_release("gas")
+    Input.action_release("reverse")
+    var vF_end: float = (world.car.global_transform.basis.inverse() * world.car.linear_velocity).z
+    var fwd_m: float = (world.car.global_position - p_rv).dot(t2)
+    print("SMOKE reverse+gas: vF=%.1f m/s net=%.2f m (vF must be positive)" % [vF_end, fwd_m])
+    if vF_end < 1.0:
+        print("SMOKE_FAIL: gas does not win over reverse (vF=%.1f)" % vF_end)
+        ok = false
+
+    # --- v0.6.0 restart button ("زر إعادة السباق يعمل كزر الاستمرار"):
+    # tap the REAL pause-menu restart button -> full reset + countdown. ---
+    open_pause()
+    await get_tree().process_frame
+    pause_menu.restart_btn.pressed.emit()
+    await get_tree().process_frame
+    var sp: Dictionary = world.track.start_pose()
+    var dist_start: float = world.car.global_position.distance_to(sp.pos)
+    var rst_ok: bool = (not get_tree().paused) and (world.state == "countdown") \
+            and (not pause_menu.is_open()) and dist_start < 4.0 and world.lap_time == 0.0
+    print("SMOKE restart: paused=%s state=%s dist=%.1f m lap=%.1f" % [
+        str(get_tree().paused), world.state, dist_start, world.lap_time])
+    if not rst_ok:
+        print("SMOKE_FAIL: restart race broken")
+        ok = false
+
+    # --- v0.6.0 menu button ("الرجوع الى القائمه الرئيسيه لا ينهي السباق"):
+    # tap the REAL menu button -> the race really ends: idle state, HUD
+    # hidden, engine loop stopped, car parked, menu visible. ---
+    open_pause()
+    await get_tree().process_frame
+    pause_menu.menu_btn.pressed.emit()
+    await get_tree().process_frame
+    var men_ok: bool = menu.visible and (world.state == "idle") \
+            and (not world.hud.visible) and (not world.car.engine_player.playing) \
+            and (world.car.linear_velocity.length() < 0.5) and (not get_tree().paused)
+    print("SMOKE menu_end: state=%s hud=%s engine=%s menu=%s vel=%.2f" % [
+        world.state, str(world.hud.visible), str(world.car.engine_player.playing),
+        str(menu.visible), world.car.linear_velocity.length()])
+    if not men_ok:
+        print("SMOKE_FAIL: exit to menu does not end the race")
+        ok = false
+
     if ok:
         print("SMOKE_OK")
         get_tree().quit(0)

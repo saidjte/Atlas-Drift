@@ -87,3 +87,15 @@ Used since v0.4.0:
     user://3d_car_customizable/ — same schema as the original, first preset
     auto-loads on launch. Preset persistence helpers live in
     scripts/car.gd (list/save/load/delete/apply).
+
+## Morning sky panorama (assets/env/kiara_morning.jpg)
+"kiara_3_morning" Equirectangular HDR/panorama by Poly Haven (formerly
+HDRI Haven), downscaled LDR JPG copy.
+Licensed under CC0 1.0 Universal (public domain dedication).
+https://polyhaven.com/a/kiara_3_morning
+
+Used since v0.6.0 as the WorldEnvironment PanoramaSkyMaterial. The file was
+borrowed from the reference project github.com/Firet/3d-racing-game (the
+project itself is GPLv3; only this CC0 texture asset is used, no GPL code).
+All other v0.6.0 scenery (mountains, trees, rocks) is generated
+procedurally at runtime by scripts/track_gen.gd and is original.

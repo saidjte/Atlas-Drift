@@ -59,6 +59,14 @@ const BODY_FRICTION := 0.12
 const BODY_BOUNCE := 0.02
 const SMOKE_DRIFT := 0.30                 # drift level that starts the tire smoke
 
+# v0.6.0 dedicated reverse gear ("اريد تمكين السيارة من الرجوع الى الخلف"):
+# its own touch button / key drives the wheels BACKWARDS — the throttle keeps
+# its v0.5.1 "always forward, wins over everything" semantics, so there is
+# no more accidental reverse through brake+gas (the v0.5.0 complaint) and no
+# more "car can't back up" either (the v0.5.1 complaint).
+@export var max_reverse_torque := 1450.0  # N per rear wheel in reverse gear
+@export var max_reverse_rpm := 250.0      # ~27 km/h wheel-rpm ceiling backwards
+
 # Starter Kit Racing style input smoothing (lerped arcade response).
 const STEER_EASE := 7.0
 const THROTTLE_EASE := 5.0
@@ -86,6 +94,7 @@ var smoke_rr: GPUParticles3D
 
 var _throttle := 0.0
 var _brake := 0.0
+var _rev := 0.0
 var _steer_in := 0.0
 var _hand := false
 var _wheel_mu := [1.0, 1.0, 1.0, 1.0]
@@ -120,11 +129,13 @@ func read_input() -> void:
                 _steer_in = lerpf(_steer_in, target, clampf(STEER_EASE * _dt(), 0.0, 1.0))
                 _throttle = lerpf(_throttle, Input.get_action_strength("gas"), clampf(THROTTLE_EASE * _dt(), 0.0, 1.0))
                 _brake = lerpf(_brake, Input.get_action_strength("brake"), clampf(BRAKE_EASE * _dt(), 0.0, 1.0))
+                _rev = lerpf(_rev, Input.get_action_strength("reverse"), clampf(THROTTLE_EASE * _dt(), 0.0, 1.0))
                 _hand = Input.is_action_pressed("hand")
         else:
                 _steer_in = lerpf(_steer_in, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
                 _throttle = lerpf(_throttle, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
                 _brake = lerpf(_brake, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
+                _rev = lerpf(_rev, 0.0, clampf(8.0 * _dt(), 0.0, 1.0))
                 _hand = false
 
 
@@ -160,25 +171,37 @@ func _physics_process(dt: float) -> void:
         var brake_f := 0.0
         var brake_r := 0.0
 
-        # v0.5.1 FIX ("البنزين يعمل رجوعاً للخلف أثناء الفرملة"): throttle and
-        # brake are now fully independent — gas ALWAYS drives forward and wins
-        # over the brake, and the brake NEVER engages reverse. The old chain
-        # checked _brake first, so holding brake + gas applied -REVERSE_FORCE
-        # (backwards!) and ignored the throttle completely.
+        # v0.5.1 FIX kept: gas ALWAYS drives forward and wins over the brake
+        # AND the reverse gear. v0.6.0 adds a dedicated reverse gear on its
+        # own action: it engages only from (near) standstill, is rpm-limited
+        # to ~27 km/h, and the brake button brakes a rolling-back car.
         if not controls_enabled:
                 brake_f = 4.0                       # hold still on the grid / menu
                 brake_r = 4.0
         elif _throttle > 0.02:
                 # gas wins: rpm-limited engine force (SRCoder curve), even if
-                # the brake is still held — the car always drives ahead.
+                # the brake or reverse is still held — the car always drives
+                # ahead.
                 engine = maxf(_throttle * power_boost * ((-max_torque / max_wheel_rpm) * rpm + max_torque), 0.0)
+        elif _rev > 0.02 and vF < 1.2:
+                if _brake > 0.05 and vF < -0.5:
+                        # rolling backwards + brake = stop the car, not throttle
+                        brake_f = max_brake_force * _brake
+                        brake_r = max_brake_force * _brake
+                else:
+                        # dedicated reverse gear: fade torque out near the
+                        # reverse rpm ceiling, hard-cut past ~30 km/h.
+                        var rrpm := clampf(rpm / max_reverse_rpm, 0.0, 1.0)
+                        engine = -_rev * max_reverse_torque * (1.0 - 0.7 * rrpm)
+                        if vF < -8.5:
+                                engine = 0.0
         elif _brake > 0.0 and vF > 0.5:
                 # forward braking: ABS-style distribution (solver caps at grip)
                 brake_f = max_brake_force * _brake
                 brake_r = max_brake_force * 0.7 * _brake
         elif _brake > 0.0:
                 # stopped + brake = parking brake: hold still, NEVER creep
-                # backwards (no reverse gear in this game by design).
+                # backwards (reverse lives on its own button now).
                 brake_f = max_brake_force * _brake
                 brake_r = max_brake_force * _brake
 
@@ -335,6 +358,34 @@ func respawn_to(pos: Vector3, yaw: float) -> void:
 
 func speed_kph() -> float:
         return linear_velocity.length() * 3.6
+
+
+## Park the car (called when the race is left for the main menu): kill all
+## motion, cut the engine/skid loops and the smoke — the race must SOUND and
+## LOOK over, not keep idling behind the menu.
+func park() -> void:
+        controls_enabled = false
+        linear_velocity = Vector3.ZERO
+        angular_velocity = Vector3.ZERO
+        _throttle = 0.0
+        _brake = 0.0
+        _rev = 0.0
+        if smoke_rl != null:
+                smoke_rl.emitting = false
+        if smoke_rr != null:
+                smoke_rr.emitting = false
+        if engine_player != null:
+                engine_player.stop()
+        if skid_player != null:
+                skid_player.stop()
+
+
+## Restart the loop players after a park() (begin_race calls this).
+func resume_audio() -> void:
+        if engine_player != null and not engine_player.playing:
+                engine_player.play()
+        if skid_player != null and not skid_player.playing:
+                skid_player.play()
 
 
 ## Lap-card bonuses (called from game.gd on each completed lap).
@@ -541,14 +592,18 @@ func _build_visuals() -> void:
 
 
 ## Apply the v0.3.0 suspension tuning onto an imported VehicleWheel3D.
+## v0.6.0 ("الطريق مليء بالمطبات"): heavier damping — the old 0.88/1.05
+## let the sprung mass oscillate after every crest and mid-corner banking
+## shift, which read as constant small bumps. Compression +42%, rebound
+## +43% keep the same ride height but kill the pogo effect.
 func _tune_wheel(w: VehicleWheel3D) -> void:
         w.wheel_radius = WHEEL_RADIUS
         w.wheel_rest_length = REST_LENGTH
         w.suspension_travel = TRAVEL
         w.suspension_stiffness = STIFFNESS
         w.suspension_max_force = MAX_SUSP_FORCE
-        w.damping_compression = 0.88
-        w.damping_relaxation = 1.05
+        w.damping_compression = 1.25
+        w.damping_relaxation = 1.50
         w.wheel_roll_influence = ROLL_INFLUENCE
 
 

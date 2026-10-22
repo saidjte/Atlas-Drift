@@ -5,6 +5,7 @@ extends CanvasLayer
 ## Layout (universal driving ergonomics, independent of UI RTL):
 ##   bottom-left  : steering  ◀ ▶   side by side
 ##   bottom-right : gas ▲ (corner), brake ▼ (left of gas), handbrake ↗ above
+##                  gas, reverse ◄▼ above the brake (v0.6.0)
 ##
 ## Arrow convention: arrow_tex() draws an UP-pointing triangle at angle 0 and
 ## Godot 2D rotates positive angles CLOCKWISE on screen, so:
@@ -16,11 +17,13 @@ const TEX_D := 256   # all textures generated once at this size, scaled per butt
 
 var _btns := {}
 var _name_labels := {}
+var _touch_ok := false
 
 
 func _ready() -> void:
         layer = 18
-        if not DisplayServer.is_touchscreen_available():
+        _touch_ok = DisplayServer.is_touchscreen_available()
+        if not _touch_ok:
                 visible = false
                 return
         var idle_col := Color(0.16, 0.19, 0.27, 0.62)
@@ -34,9 +37,20 @@ func _ready() -> void:
         _add_btn("brake", PI, idle, pressed, "فرامل")
         _add_btn("gas", 0.0, idle, pressed, "بنزين")
         _add_btn("hand", PI / 4.0, idle, pressed, "انزياح")
+        _add_btn("reverse", PI, idle, pressed, "رجوع")
 
         _layout()
         get_viewport().size_changed.connect(_layout)
+        # Hidden until begin_race() flips set_race_mode(true) — before the
+        # first race the world may exist for the settings panel only.
+        visible = false
+
+
+## Race HUD state: shown on touchscreens while a race is running, hidden on
+## the menu / after leaving the race. On non-touch devices this stays hidden
+## forever (keyboard only).
+func set_race_mode(on: bool) -> void:
+        visible = _touch_ok and on
 
 
 func _add_btn(action: String, arrow_angle: float, idle: Texture2D, pressed: Texture2D, label_text: String) -> void:
@@ -86,21 +100,25 @@ func _layout() -> void:
         var r_gas := int(88.0 * s)
         var r_brake := int(70.0 * s)
         var r_hand := int(56.0 * s)
+        var r_rev := int(56.0 * s)
         var h := vs.y
 
         # bottom-left: steering pair
         var l_c := Vector2(m + r_steer, h - m - r_steer)
         var r_c := Vector2(m + r_steer * 3 + gap, h - m - r_steer)
-        # bottom-right: pedals - gas in the corner, brake beside it, handbrake above
+        # bottom-right: pedals - gas in the corner, brake beside it, handbrake
+        # above the gas column, reverse above the brake column (v0.6.0)
         var g_c := Vector2(vs.x - m - r_gas, h - m - r_gas)
         var b_c := Vector2(g_c.x - r_gas - gap - r_brake, h - m - r_brake)
         var hd_c := Vector2(g_c.x - 4.0 * s, g_c.y - r_gas - gap - r_hand)
+        var rv_c := Vector2(b_c.x, b_c.y - r_brake - gap - r_rev)
 
         _place("left", l_c, r_steer)
         _place("right", r_c, r_steer)
         _place("gas", g_c, r_gas)
         _place("brake", b_c, r_brake)
         _place("hand", hd_c, r_hand)
+        _place("reverse", rv_c, r_rev)
 
 
 func _place(action: String, center: Vector2, r: int) -> void:

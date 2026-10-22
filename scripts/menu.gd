@@ -108,7 +108,7 @@ func _build() -> void:
                 quit.pressed.connect(func() -> void: main.quit_game())
                 root.add_child(quit)
 
-        var hint := UIKit.make_label("قيادة: أسهم/WASD • بنزين W • فرامل S • انزياح مسافة • إعادة R", 22, Color(0.55, 0.58, 0.66), main.font_regular)
+        var hint := UIKit.make_label("قيادة: أسهم/WASD • بنزين W • فرامل S • رجوع E • انزياح مسافة • إحياء R", 22, Color(0.55, 0.58, 0.66), main.font_regular)
         hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
         hint.anchor_left = 0.0
         hint.anchor_right = 1.0

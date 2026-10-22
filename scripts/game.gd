@@ -90,20 +90,30 @@ func _place_car_at_start() -> void:
 
 
 func begin_race() -> void:
+        # v0.6.0: (re)show the race surfaces — the HUD and the touch pedals
+        # are hidden by end_race() when the race is left for the menu.
+        if hud != null:
+                hud.visible = true
+        if touches != null:
+                touches.set_race_mode(true)
         _reset_race()
         state = "countdown"
         countdown_t = 3.0
         _count_shown = 9
 
 
-func pause() -> void:
+## v0.6.0 FIX ("الرجوع الى القائمه الرئيسيه لا ينهي السباق"): leaving to the
+## menu really ENDS the race — the old pause() only flipped state to idle,
+## so the HUD, the touch pedals and the engine loop kept living behind the
+## menu and the car kept rolling wherever it was.
+func end_race() -> void:
         state = "idle"
         if car != null:
-                car.controls_enabled = false
-
-
-func unpause() -> void:
-        pass
+                car.park()
+        if hud != null:
+                hud.visible = false
+        if touches != null:
+                touches.set_race_mode(false)
 
 
 func _reset_race() -> void:
@@ -118,7 +128,9 @@ func _reset_race() -> void:
         total_score = 0.0
         drift_mult = 1.0
         car.apply_card_mods(1.0, 1.0, 1.0)
+        car.resume_audio()
         car.controls_enabled = false
+        hud.set_countdown("")
         hud.set_wrong_way(false)
         hud.clear_drift()
         hud.clear_card()

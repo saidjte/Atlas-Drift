@@ -9,6 +9,9 @@ extends CanvasLayer
 
 var main
 var info_l: Label
+var resume_btn: Button
+var restart_btn: Button
+var menu_btn: Button
 var _open := false
 
 
@@ -59,39 +62,42 @@ func _build() -> void:
         info_l.anchor_bottom = 0.325
         root.add_child(info_l)
 
-        var resume := UIKit.make_button("استئناف", main.font_bold, 46)
-        resume.anchor_left = 0.5
-        resume.anchor_right = 0.5
-        resume.anchor_top = 0.44
-        resume.anchor_bottom = 0.44
-        resume.offset_left = -160
-        resume.offset_right = 160
-        resume.offset_top = -36
-        resume.offset_bottom = 46
-        resume.pressed.connect(func() -> void: main.resume_game())
-        root.add_child(resume)
+        # v0.6.0: the three buttons are kept as members (the smoke test taps
+        # them exactly like a finger does — pressed.emit()) and the tap
+        # targets are slightly taller for easier thumb hits.
+        resume_btn = UIKit.make_button("استئناف", main.font_bold, 46)
+        resume_btn.anchor_left = 0.5
+        resume_btn.anchor_right = 0.5
+        resume_btn.anchor_top = 0.43
+        resume_btn.anchor_bottom = 0.43
+        resume_btn.offset_left = -160
+        resume_btn.offset_right = 160
+        resume_btn.offset_top = -38
+        resume_btn.offset_bottom = 48
+        resume_btn.pressed.connect(func() -> void: main.resume_game())
+        root.add_child(resume_btn)
 
-        var restart := UIKit.make_button("إعادة السباق", main.font_bold, 34)
-        restart.anchor_left = 0.5
-        restart.anchor_right = 0.5
-        restart.anchor_top = 0.595
-        restart.anchor_bottom = 0.595
-        restart.offset_left = -170
-        restart.offset_right = 170
-        restart.offset_top = -28
-        restart.offset_bottom = 36
-        restart.pressed.connect(func() -> void: main.restart_race())
-        root.add_child(restart)
+        restart_btn = UIKit.make_button("إعادة السباق", main.font_bold, 34)
+        restart_btn.anchor_left = 0.5
+        restart_btn.anchor_right = 0.5
+        restart_btn.anchor_top = 0.585
+        restart_btn.anchor_bottom = 0.585
+        restart_btn.offset_left = -170
+        restart_btn.offset_right = 170
+        restart_btn.offset_top = -30
+        restart_btn.offset_bottom = 40
+        restart_btn.pressed.connect(func() -> void: main.restart_race())
+        root.add_child(restart_btn)
 
-        var menu_btn := UIKit.make_button("القائمة الرئيسية", main.font_bold, 30)
+        menu_btn = UIKit.make_button("القائمة الرئيسية", main.font_bold, 30)
         menu_btn.anchor_left = 0.5
         menu_btn.anchor_right = 0.5
-        menu_btn.anchor_top = 0.71
-        menu_btn.anchor_bottom = 0.71
+        menu_btn.anchor_top = 0.72
+        menu_btn.anchor_bottom = 0.72
         menu_btn.offset_left = -170
         menu_btn.offset_right = 170
-        menu_btn.offset_top = -26
-        menu_btn.offset_bottom = 34
+        menu_btn.offset_top = -28
+        menu_btn.offset_bottom = 38
         menu_btn.pressed.connect(func() -> void: main.exit_to_menu())
         root.add_child(menu_btn)
 
