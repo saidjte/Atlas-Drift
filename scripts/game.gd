@@ -51,10 +51,21 @@ func setup(m: Node3D) -> void:
         main = m
 
 
+## v0.6.1: _ready only CREATES the track node. The heavy construction was
+## pulled into build_track()/build_car_and_ui() so main.gd can run it
+## staged across background frames (menu must never freeze on a button
+## press). The synchronous smoke path calls both back-to-back — identical
+## net effect to the old single _ready().
 func _ready() -> void:
         track = TrackGen.new()
         add_child(track)
-        track.build(true)
+
+
+func build_track(shadows: bool) -> void:
+        track.build(shadows)
+
+
+func build_car_and_ui() -> void:
         best_lap = main.load_best()
 
         car = DriftCar.new()

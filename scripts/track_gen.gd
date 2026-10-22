@@ -37,9 +37,22 @@ var _sun: DirectionalLight3D
 var _mat_vc: StandardMaterial3D
 var _mat_vc_ds: StandardMaterial3D
 var _rng := RandomNumberGenerator.new()
+var _shadows_requested := true
 
 
+## v0.6.1: the build is split into three PHASES so main.gd can spread the
+## work across frames in the background (the old single-frame build froze
+## the whole game for seconds on phones the moment a menu button was
+## pressed — "الضغط على أي زر يتسبب بتشنج اللعبة"). build() still runs all
+## phases synchronously for the headless smoke test.
 func build(shadows: bool) -> void:
+        build_phase_a(shadows)
+        build_phase_b()
+        build_phase_c()
+
+
+func build_phase_a(shadows: bool) -> void:
+        _shadows_requested = shadows
         _rng.seed = 20260818
         _mat_vc = StandardMaterial3D.new()
         _mat_vc.vertex_color_use_as_albedo = true
@@ -49,12 +62,27 @@ func build(shadows: bool) -> void:
         _make_centerline()
         _make_frames()
         _build_road_generator()
+
+
+func build_phase_b() -> void:
         _build_rails()
         _build_skirt_and_terrain()
+
+
+func build_phase_c() -> void:
         _build_paddock()
         _build_scenery()
         _build_gates()
-        _setup_environment(shadows)
+        _setup_environment(_shadows_requested)
+
+
+## Shadow variants (sampled / not sampled in the lit pass) compile on the
+## first frame they are RENDERED. Flipping the sun off for two frames and
+## back on during the hidden background build precompiles both, so the
+## menu's shadow toggle never stutters at runtime.
+func set_shadow_state(on: bool) -> void:
+        if _sun != null:
+                _sun.shadow_enabled = on
 
 
 # ---------------------------------------------------------------- centerline

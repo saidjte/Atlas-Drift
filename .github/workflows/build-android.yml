@@ -74,6 +74,16 @@ jobs:
           set -eo pipefail
           godot --headless --path . --import 2>&1 | tail -20
 
+      # v0.6.1: run both headless smoke suites BEFORE wasting a build:
+      # --smoke = full physics/race drive, --smoke-ui = async menu flow.
+      - name: Smoke tests (headless)
+        run: |
+          set -eo pipefail
+          godot --headless --path . -- --smoke-ui 2>&1 | tee /tmp/smoke_ui.log | grep -E "SMOKE_UI"
+          grep -q "SMOKE_UI_OK" /tmp/smoke_ui.log
+          godot --headless --path . -- --smoke 2>&1 | tee /tmp/smoke.log | grep -E "SMOKE"
+          grep -q "SMOKE_OK" /tmp/smoke.log
+
       - name: Export Android APK
         run: |
           set -eo pipefail

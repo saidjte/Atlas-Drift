@@ -1,7 +1,7 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.6.0"
+const GAME_VERSION := "0.6.1"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
@@ -10,6 +10,8 @@ var world
 var menu
 var pause_menu
 var car_panel: CarSettingsPanel
+var _world_ready := false    # v0.6.1: the background world build finished
+var _race_starting := false  # v0.6.1: re-entry guard for start_race()
 
 
 func _ready() -> void:
@@ -22,8 +24,74 @@ func _ready() -> void:
         pause_menu = load("res://scripts/pause_menu.gd").new()
         pause_menu.setup(self)
         add_child(pause_menu)
+        if not ("--smoke" in OS.get_cmdline_user_args()):
+                # v0.6.1: build the world in the background while the menu is
+                # up, so no menu button ever freezes the game (see
+                # _prebuild_world below).
+                _prebuild_world()
         if "--smoke" in OS.get_cmdline_user_args():
                 _smoke_test()
+        elif "--smoke-ui" in OS.get_cmdline_user_args():
+                _smoke_ui_test()
+
+
+## The headless smoke test keeps the old synchronous world build (its
+## timing assertions depend on it); phones get the async one.
+func _use_async_world() -> bool:
+        return not ("--smoke" in OS.get_cmdline_user_args())
+
+
+## v0.6.1 FIX ("الضغط على أي زر في القائمة يتسبب بتشنج اللعبة"): the whole
+## world used to be built in ONE frame the first time the user pressed
+## "ابدأ السباق" or "إعدادات السيارة" — several seconds of total freeze on
+## a phone. Now the world builds in the background in small chunks while
+## the menu is on screen, with the start button showing progress. By the
+## time the player taps anything, the world is usually already there.
+func _prebuild_world() -> void:
+        var game_script := load("res://scripts/game.gd")
+        world = game_script.new()
+        world.setup(self)
+        add_child(world)
+        menu.set_building(true, 5)
+        await get_tree().process_frame
+        menu.set_building(true, 15)
+        world.track.build_phase_a(true)   # centerline + Road Generator mesh/collision
+        await get_tree().process_frame
+        menu.set_building(true, 45)
+        world.track.build_phase_b()       # rails + skirt/terrain
+        await get_tree().process_frame
+        menu.set_building(true, 65)
+        world.track.build_phase_c()       # paddock + scenery + gates + environment
+        await get_tree().process_frame
+        menu.set_building(true, 85)
+        world.build_car_and_ui()
+        await get_tree().process_frame
+        # Prewarm BOTH shadow shader variants while the menu covers the
+        # screen, so the shadows toggle never recompiles shaders mid-game.
+        world.track.set_shadow_state(false)
+        await get_tree().process_frame
+        await get_tree().process_frame
+        world.track.set_shadow_state(true)
+        _world_ready = true
+        menu.set_building(false, 100)
+        if menu.visible and world != null:
+                world.visible = false     # idle in menu: don't render the track
+
+
+## Resumes only when the world is fully built. Falls back to the old
+## synchronous build if the background coroutine is not around.
+func _await_world_ready() -> void:
+        if world != null and _world_ready:
+                return
+        if world == null:
+                _ensure_world()
+                return
+        var guard := 0
+        while not _world_ready and guard < 900:
+                guard += 1
+                await get_tree().process_frame
+        if not _world_ready:
+                _ensure_world()
 
 
 ## Event Audio addon (addons/event_audio, autoload "EventAudio"): register a
@@ -92,14 +160,25 @@ func _make_menu() -> void:
 func start_race() -> void:
         if get_tree().paused:
                 resume_game()
-        if world == null:
+        if _race_starting:
+                return
+        _race_starting = true
+        if _use_async_world():
+                await _await_world_ready()
+                if world == null or not _world_ready:
+                        _race_starting = false
+                        return
+        elif world == null:
                 _ensure_world()
         if car_panel != null and car_panel.is_open():
                 car_panel.close()
                 menu.visible = true
+                _race_starting = false
                 return
         menu.visible = false
+        world.visible = true
         world.begin_race()
+        _race_starting = false
 
 
 ## صفحة التوقف المؤقت (v0.5.0): freeze the whole tree and float the pause
@@ -134,8 +213,12 @@ func restart_race() -> void:
         resume_game()
         _release_drive_actions()
         if world == null:
-                _ensure_world()
+                if _use_async_world():
+                        await _await_world_ready()
+                else:
+                        _ensure_world()
         menu.visible = false
+        world.visible = true
         world.begin_race()
         if world.hud != null:
                 world.hud.do_fade()
@@ -146,8 +229,7 @@ func _release_drive_actions() -> void:
                 Input.action_release(a)
 
 
-## Lazily build the world (track + car + HUD) so the car settings panel has a
-## live VehicleBody3D to tune even before the first race.
+## Synchronous world build — the smoke-test path (and the async fallback).
 func _ensure_world() -> void:
         if world != null:
                 return
@@ -155,11 +237,19 @@ func _ensure_world() -> void:
         world = game_script.new()
         world.setup(self)
         add_child(world)
+        world.build_track(true)
+        world.build_car_and_ui()
+        _world_ready = true
 
 
 ## Menu entry point: open the 3D Car settings panel over the menu.
 func open_car_settings() -> void:
-        _ensure_world()
+        if _use_async_world():
+                await _await_world_ready()
+                if world == null or not _world_ready:
+                        return
+        elif world == null:
+                _ensure_world()
         if car_panel == null:
                 car_panel = load("res://scripts/settings_panel.gd").new()
                 car_panel.setup(self, world.car)
@@ -178,6 +268,10 @@ func exit_to_menu() -> void:
         _release_drive_actions()
         if world != null:
                 world.end_race()
+                # v0.6.1: back in the menu the track stops rendering — the
+                # physics keeps idling, the GPU gets a break, and the menu
+                # stays smooth on weak phones.
+                world.visible = false
         menu.visible = true
         menu.refresh_stats()
 
@@ -213,6 +307,44 @@ func _unhandled_input(event: InputEvent) -> void:
         if event.is_action_pressed("ui_cancel"):
                 if world != null and not get_tree().paused:
                         open_pause()
+
+
+## Headless check of the v0.6.1 ASYNC menu flow: the world prebuilds in the
+## background while the menu is up (hidden from the GPU), a start-button
+## press never blocks the frame, and the race begins with the world shown.
+func _smoke_ui_test() -> void:
+        var guard := 0
+        while not _world_ready and guard < 900:
+                guard += 1
+                await get_tree().process_frame
+        var menu_ok: bool = menu.visible and _world_ready \
+                and (not world.visible) and world.track.road_container != null \
+                and world.car != null
+        print("SMOKE_UI prebuild: ready=%s menu=%s world_hidden=%s car=%s" % [
+                str(_world_ready), str(menu.visible), str(not world.visible),
+                str(world.car != null)])
+        # The player taps "ابدأ السباق".
+        start_race()
+        await get_tree().process_frame
+        await get_tree().process_frame
+        var race_ok: bool = (not menu.visible) and world.visible \
+                and world.state == "countdown" and (not get_tree().paused)
+        print("SMOKE_UI start: menu_hidden=%s world_visible=%s state=%s" % [
+                str(not menu.visible), str(world.visible), world.state])
+        # And back to the menu: the race ends and the world hides again.
+        await get_tree().create_timer(0.5).timeout
+        exit_to_menu()
+        await get_tree().process_frame
+        var exit_ok: bool = menu.visible and (not world.visible) \
+                and world.state == "idle"
+        print("SMOKE_UI exit: menu=%s world_hidden=%s state=%s" % [
+                str(menu.visible), str(not world.visible), world.state])
+        if menu_ok and race_ok and exit_ok:
+                print("SMOKE_UI_OK")
+                get_tree().quit(0)
+        else:
+                print("SMOKE_UI_FAIL")
+                get_tree().quit(1)
 
 
 ## Headless end-to-end smoke drive: menu -> race -> gas -> steer (direction

@@ -4,6 +4,8 @@ extends CanvasLayer
 var main
 var best_label: Label
 var shadows_btn: Button
+var start_btn: Button      # v0.6.1: kept as a member for build-progress text
+var _start_txt := "ابدأ السباق"
 
 
 func setup(m: Node3D) -> void:
@@ -59,17 +61,17 @@ func _build() -> void:
         best_label.anchor_bottom = 0.40
         root.add_child(best_label)
 
-        var start := UIKit.make_button("ابدأ السباق", main.font_bold, 46)
-        start.anchor_left = 0.5
-        start.anchor_right = 0.5
-        start.anchor_top = 0.66
-        start.anchor_bottom = 0.66
-        start.offset_left = -160
-        start.offset_right = 160
-        start.offset_top = -34
-        start.offset_bottom = 44
-        start.pressed.connect(func() -> void: main.start_race())
-        root.add_child(start)
+        start_btn = UIKit.make_button(_start_txt, main.font_bold, 46)
+        start_btn.anchor_left = 0.5
+        start_btn.anchor_right = 0.5
+        start_btn.anchor_top = 0.66
+        start_btn.anchor_bottom = 0.66
+        start_btn.offset_left = -160
+        start_btn.offset_right = 160
+        start_btn.offset_top = -34
+        start_btn.offset_bottom = 44
+        start_btn.pressed.connect(func() -> void: main.start_race())
+        root.add_child(start_btn)
 
         var settings_btn := UIKit.make_button("إعدادات السيارة", main.font_bold, 30)
         settings_btn.anchor_left = 0.5
@@ -117,6 +119,18 @@ func _build() -> void:
         root.add_child(hint)
 
         refresh_stats()
+
+
+## v0.6.1: live progress while the world builds in the background — the
+## player sees WHY the first press may need a short wait instead of a
+## frozen, dead-looking screen.
+func set_building(on: bool, pct: int) -> void:
+        if start_btn == null:
+                return
+        if on:
+                start_btn.text = "جارٍ تجهيز الحلبة… %d%%" % pct
+        else:
+                start_btn.text = _start_txt
 
 
 func refresh_stats() -> void:
