@@ -20,3 +20,7 @@ extends Resource
 @export var roll := PackedFloat32Array()     # banking roll per sample
 @export var kabs := PackedFloat32Array()     # |horizontal curvature| (1/m)
 @export var road_idxs := PackedInt32Array()  # RoadPoint sample indices
+# v0.8.0 (A Few Roads): sample indices of the apexes that got chevron
+# boards + curbs in the bake. Smoke tests use them to run rail-scrape
+# checks on clean straights; future HUD hooks can warn "hairpin ahead".
+@export var dressed_apexes := PackedInt32Array() # corner-apex samples

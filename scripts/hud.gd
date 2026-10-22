@@ -237,8 +237,13 @@ func flash(txt: String, dur := 2.2) -> void:
         _msg_t = dur
 
 
-func show_drift(pts: int) -> void:
-        drift_l.text = "انزياح +%d" % pts
+## v0.8.0 (A Few Roads): the drift chip shows the live slip angle next to
+## the points, like A Few Roads' drift timer readout.
+func show_drift(pts: int, ang: int = -1) -> void:
+        if ang >= 0:
+                drift_l.text = "انزياح +%d  (%d°)" % [pts, ang]
+        else:
+                drift_l.text = "انزياح +%d" % pts
 
 
 func clear_drift() -> void:

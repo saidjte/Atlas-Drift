@@ -39,6 +39,15 @@ func _run() -> void:
         root.add_child(tg)
         tg.build(true)
         await process_frame
+        await process_frame
+        await physics_frame   # flush collision bodies so surface raycasts hit
+
+        # ---- v0.8.0 corner dressing (A Few Roads): chevron arrow boards on
+        # the outer edge + red/white curbs on the inner edge of every sharp
+        # corner. Runs HERE on the dev machine only — the results are frozen
+        # into world_track.scn; the phone just loads the file. ----
+        _dress_corners(tg)
+        await process_frame
 
         # ---- capture the centerline data BEFORE any surgery ----
         var td := TrackData.new()
@@ -92,6 +101,7 @@ func _run() -> void:
                 quit(1)
                 return
         DirAccess.make_dir_recursive_absolute("res://assets/track")
+        td.dressed_apexes = _apexes
         err = ResourceSaver.save(td, DATA_OUT, ResourceSaver.FLAG_COMPRESS)
         if err != OK:
                 push_error("BAKE world: save data failed (%d)" % err)
@@ -151,3 +161,177 @@ func _set_owner(n: Node, o: Node) -> void:
                 n.owner = o
         for c in n.get_children():
                 _set_owner(c, o)
+
+
+# ================================================================ corner dressing
+# v0.8.0 — A Few Roads reads corners through physical, pre-built signs and
+# curbs (mark_triangle_* boards, ker curbs). Atlas Drift gets the same
+# treatment, baked into the world scene: red/white chevron boards on the
+# outside edge of each sharp corner, facing oncoming traffic, plus red/white
+# curb strips along the inside edge at the apex. All static, all saved —
+# zero runtime generation.
+
+const CORNER_K_MIN := 1.0 / 32.0   # |curvature| above this = dressed corner
+const CHEVRON_TEX_R := "res://assets/track/chevron_right.png"
+const CHEVRON_TEX_L := "res://assets/track/chevron_left.png"
+
+var _boards := 0
+var _curbs := 0
+var _dressed := 0
+var _apexes := PackedInt32Array()
+
+
+## Scan the centerline for sharp-corner runs and decorate each apex.
+func _dress_corners(tg: TrackGenLegacy) -> void:
+        var n: int = tg.N
+        var pts: PackedVector3Array = tg.pts
+        # signed horizontal curvature (right turn = negative), same chord
+        # formula as the builder's banking pass
+        var ks := PackedFloat32Array()
+        ks.resize(n)
+        for i in n:
+                var a := pts[(i - 2 + n) % n]
+                var b := pts[i]
+                var c := pts[(i + 2) % n]
+                var v1 := b - a
+                var v2 := c - b
+                var la := v1.length()
+                var lb := v2.length()
+                if la < 0.01 or lb < 0.01:
+                        continue
+                ks[i] = asin(clampf(v1.cross(v2).y / (la * lb), -1.0, 1.0)) / (0.5 * (la + lb))
+
+        # corner runs above threshold, merged when closer than 6 samples
+        var runs: Array = []
+        var in_run := false
+        var start := 0
+        for i in n + 1:
+                var sharp: bool = i < n and absf(ks[i]) > CORNER_K_MIN
+                if sharp and not in_run:
+                        in_run = true
+                        start = i
+                elif not sharp and in_run:
+                        in_run = false
+                        if i - start >= 3:
+                                runs.append([start, i])
+        var merged: Array = []
+        for r in runs:
+                if not merged.is_empty() and (r[0] - merged[-1][1]) < 6:
+                        merged[-1][1] = r[1]
+                else:
+                        merged.append(r)
+
+        var tex_r: Texture2D = load(CHEVRON_TEX_R)
+        var tex_l: Texture2D = load(CHEVRON_TEX_L)
+        var space := root.get_world_3d().direct_space_state
+        var apexes := PackedInt32Array()
+        for r in merged:
+                var apex: int = r[0]
+                for i in range(r[0], r[1]):
+                        if absf(ks[i]) > absf(ks[apex]):
+                                apex = i
+                if absf(ks[apex]) < 1.0 / 30.0:
+                        continue
+                apexes.append(apex)
+                var turn := signf(ks[apex])          # +1 left, -1 right
+                var outer := turn                    # outer edge side
+                var inner := -turn                   # inner (apex) edge side
+                _dressed += 1
+                for off in [-5, 0, 5]:
+                        _add_chevron(tg, space, (apex + off + n) % n, outer,
+                                tex_r if turn < 0.0 else tex_l)
+                for off in [-4, -2, 0, 2, 4]:
+                        _add_curb(tg, space, (apex + off + n) % n, inner,
+                                int(floor(float(apex + off) * 0.5)) % 2 == 0)
+        _apexes = apexes
+        print("BAKE dressing: %d corners %s, %d chevron boards, %d curbs" % [
+                _dressed, str(apexes), _boards, _curbs])
+
+
+## Ground height under a world point (bake-time raycast; falls back to the
+## centerline height when nothing is hit).
+func _ground_y(space: PhysicsDirectSpaceState3D, p: Vector3, fallback: float) -> Dictionary:
+        var q := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 5.0,
+                p + Vector3.DOWN * 14.0)
+        var hit := space.intersect_ray(q)
+        if hit.has("position"):
+                return {"y": hit.position.y, "normal": hit.normal}
+        return {"y": fallback, "normal": Vector3.UP}
+
+
+## Red/white chevron board on a post at the OUTER edge, facing back along
+## the track so approaching drivers see the arrows pointing into the turn.
+func _add_chevron(tg: TrackGenLegacy, space: PhysicsDirectSpaceState3D,
+                i: int, outer: float, tex: Texture2D) -> void:
+        var edge: Vector3 = tg.pts[i] + tg.rgts_flat[i] * (outer * (tg.HALF_W + 2.2))
+        var g: Dictionary = _ground_y(space, edge, tg.pts[i].y)
+        var base_y: float = g["y"]
+
+        var post := CylinderMesh.new()
+        post.top_radius = 0.05
+        post.bottom_radius = 0.06
+        post.height = 1.35
+        var post_mi := MeshInstance3D.new()
+        post_mi.mesh = post
+        var pm := StandardMaterial3D.new()
+        pm.albedo_color = Color(0.42, 0.42, 0.44)
+        post_mi.material_override = pm
+        post_mi.position = Vector3(edge.x, base_y + 0.675, edge.z)
+        tg.add_child(post_mi)
+
+        var quad := QuadMesh.new()
+        quad.size = Vector2(1.7, 0.95)
+        var board := MeshInstance3D.new()
+        board.mesh = quad
+        var bm := StandardMaterial3D.new()
+        bm.albedo_texture = tex
+        bm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        bm.cull_mode = BaseMaterial3D.CULL_DISABLED
+        bm.roughness = 0.55
+        board.material_override = bm
+        var q := Quaternion(Vector3.UP, atan2(-tg.tans[i].x, -tg.tans[i].z))
+        board.transform = Transform3D(Basis(q),
+                Vector3(edge.x, base_y + 1.55, edge.z))
+        tg.add_child(board)
+        _boards += 1
+
+
+## One red/white curb block on the INNER road edge at the apex — a static
+## body grouped "road" so the wheels read it as asphalt and rumble over it.
+func _add_curb(tg: TrackGenLegacy, space: PhysicsDirectSpaceState3D,
+                i: int, inner: float, red: bool) -> void:
+        var edge: Vector3 = tg.pts[i] + tg.rgts_flat[i] * (inner * (tg.HALF_W - 0.32))
+        var g: Dictionary = _ground_y(space, edge, tg.pts[i].y)
+        var y: float = g["y"]
+        var nrm: Vector3 = (g["normal"] as Vector3).normalized()
+        var tz: Vector3 = tg.tans[i].normalized()
+        var zz := (tz - nrm * tz.dot(nrm)).normalized()   # tangent on the surface
+        var xx := nrm.cross(zz).normalized()
+
+        var body := StaticBody3D.new()
+        body.add_to_group("road")            # persisted by _persist_groups
+        # Same anti-stick policy as the road ribbon and the rails: the static
+        # body is friction-free, grip lives entirely in wheel_friction_slip,
+        # so a car scraping the curb slides instead of welding to it.
+        var body_pm := PhysicsMaterial.new()
+        body_pm.friction = 0.0
+        body_pm.bounce = 0.0
+        body.physics_material_override = body_pm
+        var shape := CollisionShape3D.new()
+        var box := BoxShape3D.new()
+        box.size = Vector3(0.55, 0.08, 1.4)
+        shape.shape = box
+        body.add_child(shape)
+        var mi := MeshInstance3D.new()
+        var mesh := BoxMesh.new()
+        mesh.size = Vector3(0.55, 0.08, 1.4)
+        mi.mesh = mesh
+        var m := StandardMaterial3D.new()
+        m.albedo_color = Color(0.80, 0.07, 0.12) if red else Color(0.92, 0.92, 0.92)
+        m.roughness = 0.7
+        mi.material_override = m
+        body.add_child(mi)
+        body.transform = Transform3D(Basis(xx, nrm, zz),
+                Vector3(edge.x, y + 0.036, edge.z))
+        tg.add_child(body)
+        _curbs += 1

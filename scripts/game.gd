@@ -240,12 +240,15 @@ func _race_step(dt: float) -> void:
                 _wrong_warned = false
         hud.set_wrong_way(wrong_now)
 
-        # Drift scoring.
+        # Drift scoring. v0.8.0 (A Few Roads): the slip-angle drift state
+        # joins the gate — slides the old lateral-velocity factor misses
+        # (long high-angle drifts) now score too, and the HUD chip shows the
+        # live slip angle like A Few Roads' drift timer.
         var spd := car.speed_kph()
-        if car.drift > 0.25 and spd > 32.0 and car.grounded:
+        if (car.in_drift or car.drift > 0.25) and spd > 32.0 and car.grounded:
                 drift_pts += car.drift * spd * dt * 1.4 * drift_mult
                 drift_show_t = 0.8
-                hud.show_drift(int(drift_pts))
+                hud.show_drift(int(drift_pts), int(car.slip_deg))
         elif drift_show_t > 0.0:
                 drift_show_t -= dt
                 if drift_show_t <= 0.0:

@@ -76,6 +76,13 @@ var steer := 0.0
 var drift := 0.0                          # smoothed slide factor 0..1
 var grounded := true
 var surface_name := "road"
+# v0.8.0 (A Few Roads): slip-angle drift machinery — `slip_deg` is the angle
+# between the heading and the actual travel direction (their curAng),
+# `in_drift` a hysteresis state machine fed by it.
+var slip_deg := 0.0
+var in_drift := false
+const SLIP_ENTER := 19.0                  # deg of slip that starts a drift
+const SLIP_EXIT := 9.0                    # deg where the slide is recovered
 var controls_enabled := false
 var lat_g := 0.0                          # displayed lateral g
 var rpm_norm := 0.0                       # avg driven-wheel rpm / max
@@ -97,6 +104,7 @@ var _brake := 0.0
 var _rev := 0.0
 var _steer_in := 0.0
 var _hand := false
+var _slip_deg_s := 0.0                    # smoothed slip angle (state)
 var _wheel_mu := [1.0, 1.0, 1.0, 1.0]
 var _impact_cd := 0.0
 
@@ -155,6 +163,18 @@ func _physics_process(dt: float) -> void:
         if controls_enabled:
                 var s_norm := clampf(speed / 38.0, 0.0, 1.0)
                 var lock := lerpf(max_steer, 0.10, s_norm)
+                # v0.8.0 (A Few Roads): mid-slide the front wheels get their
+                # authority back (their fastSpeedSteeringLimit relaxes while
+                # inDrift) so the slide can be held and steered instead of
+                # scrubbing out.
+                if in_drift:
+                        lock = lerpf(lock, max_steer, 0.55)
+                # v0.8.0 (A Few Roads): counter-steer snap — flipping the input
+                # zeroes the old wheel angle instantly (their
+                # "currentWheelRotation = 0 on input flip"), no slow slew
+                # across the center, so catch-and-hold feels immediate.
+                if absf(steer) > 0.02 and absf(_steer_in) > 0.05 and signf(_steer_in) != signf(steer):
+                        steer = 0.0
                 steer = move_toward(steer, _steer_in * lock, steer_damping * dt)
         else:
                 steer = move_toward(steer, 0.0, 4.0 * dt)
@@ -244,6 +264,26 @@ func _physics_process(dt: float) -> void:
                 slide = maxf(slide, 0.55)
         drift = lerpf(drift, slide, clampf(7.0 * dt, 0.0, 1.0))
         lat_g = vF * angular_velocity.y / 9.81
+
+        # ---- v0.8.0 (A Few Roads): slip angle + hysteresis drift state ----
+        if speed > 2.5 and grounded:
+                var ang := absf(rad_to_deg(atan2(vL, absf(vF))))
+                _slip_deg_s = lerpf(_slip_deg_s, ang, clampf(10.0 * dt, 0.0, 1.0))
+        else:
+                _slip_deg_s = lerpf(_slip_deg_s, 0.0, clampf(6.0 * dt, 0.0, 1.0))
+        slip_deg = _slip_deg_s
+        if in_drift:
+                if slip_deg < SLIP_EXIT or speed < 5.0 or not grounded:
+                        in_drift = false
+        elif slip_deg > SLIP_ENTER and speed > 7.0 and grounded:
+                in_drift = true
+
+        # v0.8.0 (A Few Roads): mild yaw assist while sliding — their
+        # `rotation.y += delta * 0.5 * axis` drift crutch, reined into a torque
+        # on the physics body so the slide rotates without breaking VehicleBody
+        # solver stability.
+        if in_drift and controls_enabled and absf(_steer_in) > 0.15:
+                apply_torque(Vector3.UP * _steer_in * 210.0)
 
         _update_smoke(speed, dt)
         _update_camera(dt, vF)

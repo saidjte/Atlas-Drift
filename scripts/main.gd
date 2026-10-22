@@ -1,7 +1,7 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.7.0"
+const GAME_VERSION := "0.8.0"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
@@ -345,6 +345,24 @@ func _smoke_ui_test() -> void:
 ## realistic VehicleBody3D physics (0-100 in ~7 s, ~140 km/h top). v0.4.0 adds
 ## Road Generator / GridMap paddock / SKR audio / smoke particles / preset
 ## round-trip assertions.
+## v0.8.0: pick the sample FARTHEST from every dressed corner apex — the
+## wall-scrape smoke run needs a clean straight (curbs live at the apexes).
+func _clean_straight_idx(tg: TrackGen) -> int:
+    var apexes: PackedInt32Array = tg.data.dressed_apexes
+    var best: int = 0
+    var best_d: float = -1.0
+    for i in range(0, tg.N, 8):
+        var d: float = 1e18
+        for a in apexes:
+            var dd: int = abs(i - int(a))
+            dd = min(dd, tg.N - dd)          # loop distance
+            d = minf(d, float(dd))
+        if d > best_d:
+            best_d = d
+            best = i
+    return best
+
+
 func _smoke_test() -> void:
     await get_tree().create_timer(1.0).timeout
     start_race()
@@ -382,8 +400,10 @@ func _smoke_test() -> void:
     Input.action_press("hand")
     await get_tree().create_timer(0.5).timeout
     var d2: float = world.car.drift
+    var slip2: float = world.car.slip_deg
+    var indrift2: bool = world.car.in_drift
     Input.action_release("hand")
-    print("SMOKE handbrake: drift=%.2f" % d2)
+    print("SMOKE handbrake: drift=%.2f slip=%.0fdeg in_drift=%s" % [d2, slip2, str(indrift2)])
     Input.action_press("brake")
     await get_tree().create_timer(1.0).timeout
     Input.action_release("brake")
@@ -394,6 +414,11 @@ func _smoke_test() -> void:
 
     # --- v0.4.0 asset checks + v0.7.0 baked-world checks ---
     var ok := true
+    # v0.8.0: the new slip-angle machinery must see the slide the handbrake
+    # just made (either live slip above 10 deg or the in_drift latch).
+    if d2 > 0.5 and not (slip2 > 10.0 or indrift2):
+        print("SMOKE_FAIL: slip-angle drift machinery dead (slip=%.1f)" % slip2)
+        ok = false
     var baked_ok: bool = world.track.data != null \
             and world.track.road_container != null \
             and world.track.build_ms > 0
@@ -596,9 +621,12 @@ func _smoke_test() -> void:
 
     # --- v0.5.1 wall-slide drive: aim ~30 deg into the rail on the +rgts
     # side (rails are symmetric, either side works) and hold gas — the car
-    # must KEEP MOVING along the wall instead of welding to it. ---
+    # must KEEP MOVING along the wall instead of welding to it.
+    # v0.8.0: the run now starts on the straight FARTHEST from any dressed
+    # corner (A Few Roads chevrons/curbs live at the apexes — the wall test
+    # must measure rail sliding, not drive over the new curbs). ---
     var tg: TrackGen = world.track
-    var idx0: int = tg.nearest_idx(world.car.global_position, world.last_idx)
+    var idx0: int = _clean_straight_idx(tg)
     var ctr: Vector3 = tg.pts[idx0]
     var tanv: Vector3 = tg.tans[idx0]
     tanv.y = 0.0
