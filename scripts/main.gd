@@ -1,7 +1,7 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.5.0"
+const GAME_VERSION := "0.5.1"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
@@ -384,6 +384,100 @@ func _smoke_test() -> void:
         ok = false
     if i2 - 3 < 8:
         print("SMOKE_FAIL: barely moved (idx %d)" % i2)
+        ok = false
+
+    # --- v0.5.1 brake/reverse fix ("البنزين يعمل رجوعاً عند الفرملة"): the
+    # car is at rest here. 1) brake alone must HOLD, never creep back.
+    # 2) brake + gas together must drive FORWARD (gas wins, no reverse). ---
+    var p_br: Vector3 = world.car.global_position
+    Input.action_press("brake")
+    await get_tree().create_timer(0.8).timeout
+    Input.action_release("brake")
+    var fwd_br: Vector3 = world.car.global_transform.basis.z
+    fwd_br.y = 0.0
+    fwd_br = fwd_br.normalized()
+    var back_m: float = (world.car.global_position - p_br).dot(fwd_br)
+    print("SMOKE brake-hold: drift_along=%.2f m speed=%.1f kph" % [back_m, world.car.speed_kph()])
+    if back_m < -0.35:
+        print("SMOKE_FAIL: brake creeps backwards (%.2f m)" % back_m)
+        ok = false
+
+    var p_bg: Vector3 = world.car.global_position
+    var fwd_bg: Vector3 = world.car.global_transform.basis.z
+    fwd_bg.y = 0.0
+    fwd_bg = fwd_bg.normalized()
+    Input.action_press("brake")
+    Input.action_press("gas")
+    await get_tree().create_timer(2.2).timeout
+    Input.action_release("brake")
+    Input.action_release("gas")
+    var adv: float = (world.car.global_position - p_bg).dot(fwd_bg)
+    print("SMOKE gas+brake: forward=%.2f m (must be positive)" % adv)
+    if adv < 1.5:
+        print("SMOKE_FAIL: gas does not override brake (adv=%.2f m)" % adv)
+        ok = false
+
+    # --- v0.5.1 anti-stick fix ("السيارة تلتصق بجدران الطريق"): rails must
+    # be friction-free; road colliders near-friction-free (wheel grip is
+    # wheel_friction_slip-based, unaffected by these materials). ---
+    var rails := get_tree().get_nodes_in_group("rail")
+    var rail_lo := rails.size() > 0
+    for r in rails:
+        var rpm: PhysicsMaterial = (r as StaticBody3D).physics_material_override
+        if rpm == null or rpm.friction > 0.05:
+            rail_lo = false
+    print("SMOKE rails: count=%d friction_free=%s" % [rails.size(), str(rail_lo)])
+    if not rail_lo:
+        print("SMOKE_FAIL: rails keep default friction")
+        ok = false
+    var roads := get_tree().get_nodes_in_group("road")
+    var road_lo := roads.size() > 0
+    for r2 in roads:
+        var rpm2: PhysicsMaterial = (r2 as StaticBody3D).physics_material_override
+        if rpm2 == null or rpm2.friction > 0.06:
+            road_lo = false
+    print("SMOKE road: bodies=%d low_friction=%s" % [roads.size(), str(road_lo)])
+    if not road_lo:
+        print("SMOKE_FAIL: road colliders keep default friction")
+        ok = false
+
+    # --- v0.5.1 wall-slide drive: aim ~30 deg into the rail on the +rgts
+    # side (rails are symmetric, either side works) and hold gas — the car
+    # must KEEP MOVING along the wall instead of welding to it. ---
+    var tg: TrackGen = world.track
+    var idx0: int = tg.nearest_idx(world.car.global_position, world.last_idx)
+    var ctr: Vector3 = tg.pts[idx0]
+    var tanv: Vector3 = tg.tans[idx0]
+    tanv.y = 0.0
+    tanv = tanv.normalized()
+    var sidev: Vector3 = tg.rgts_flat[idx0]
+    sidev.y = 0.0
+    sidev = sidev.normalized()
+    var aim: Vector3 = (tanv * cos(deg_to_rad(30.0)) + sidev * sin(deg_to_rad(30.0))).normalized()
+    var yaw0: float = atan2(aim.x, aim.z)
+    var start_pos: Vector3 = ctr + sidev * 4.3
+    world.car.set_pose(start_pos, yaw0)
+    Input.action_press("gas")
+    await get_tree().create_timer(4.0).timeout
+    var wall_speed: float = world.car.speed_kph()
+    Input.action_release("gas")
+    var d_off: Vector3 = world.car.global_position - start_pos
+    print("SMOKE wall: speed_while_scraping=%d kph lateral=%.2f m" % [int(wall_speed), d_off.dot(sidev)])
+    if wall_speed < 18.0:
+        print("SMOKE_FAIL: car sticks to the rail (speed=%d kph)" % int(wall_speed))
+        ok = false
+    if d_off.dot(sidev) > 7.0:
+        print("SMOKE_FAIL: car hopped the rail (lat=%.2f m)" % d_off.dot(sidev))
+        ok = false
+
+    # --- v0.5.1 simplified settings panel: builds, opens, closes. ---
+    open_car_settings()
+    var panel_ok := car_panel != null and car_panel.is_open()
+    if car_panel != null:
+        car_panel.close()
+    print("SMOKE panel: build_open_close=%s" % str(panel_ok))
+    if not panel_ok:
+        print("SMOKE_FAIL: simplified settings panel broken")
         ok = false
     if ok:
         print("SMOKE_OK")

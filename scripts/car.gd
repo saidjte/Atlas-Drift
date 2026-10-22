@@ -51,9 +51,12 @@ const ROLL_INFLUENCE := 0.10              # low -> resists body roll (flat touge
 const CD_A := 0.32                        # aero drag coefficient*area (x rho/2)
 const DOWNFORCE_K := 1.15                 # N per (m/s)^2
 const DOWNFORCE_MAX := 5200.0
-const REVERSE_FORCE := 980.0              # N per rear wheel in reverse
-const REVERSE_VMAX := 9.0                 # m/s reverse cap
 const ARCH_H := 0.49                      # car_model wheel-center height below body origin
+# v0.5.1 anti-stick: the collision box slides along rails/walls instead of
+# gripping them. Wheel grip is NOT affected — raycast wheels use
+# wheel_friction_slip, never the PhysicsMaterial.
+const BODY_FRICTION := 0.12
+const BODY_BOUNCE := 0.02
 const SMOKE_DRIFT := 0.30                 # drift level that starts the tire smoke
 
 # Starter Kit Racing style input smoothing (lerped arcade response).
@@ -97,6 +100,12 @@ func _ready() -> void:
         contact_monitor = true
         max_contacts_reported = 6
         body_entered.connect(_on_body_entered)
+        # v0.5.1 anti-stick belt & suspenders: even away from the rails (paddock
+        # trucks, road underside scrapes) the body slides instead of glueing.
+        var pm := PhysicsMaterial.new()
+        pm.friction = BODY_FRICTION
+        pm.bounce = BODY_BOUNCE
+        physics_material_override = pm
         _build_visuals()
         _build_audio()
 
@@ -151,20 +160,27 @@ func _physics_process(dt: float) -> void:
         var brake_f := 0.0
         var brake_r := 0.0
 
+        # v0.5.1 FIX ("البنزين يعمل رجوعاً للخلف أثناء الفرملة"): throttle and
+        # brake are now fully independent — gas ALWAYS drives forward and wins
+        # over the brake, and the brake NEVER engages reverse. The old chain
+        # checked _brake first, so holding brake + gas applied -REVERSE_FORCE
+        # (backwards!) and ignored the throttle completely.
         if not controls_enabled:
                 brake_f = 4.0                       # hold still on the grid / menu
                 brake_r = 4.0
-        elif _brake > 0.0 and vF > 0.8:
+        elif _throttle > 0.02:
+                # gas wins: rpm-limited engine force (SRCoder curve), even if
+                # the brake is still held — the car always drives ahead.
+                engine = maxf(_throttle * power_boost * ((-max_torque / max_wheel_rpm) * rpm + max_torque), 0.0)
+        elif _brake > 0.0 and vF > 0.5:
                 # forward braking: ABS-style distribution (solver caps at grip)
                 brake_f = max_brake_force * _brake
                 brake_r = max_brake_force * 0.7 * _brake
         elif _brake > 0.0:
-                engine = -REVERSE_FORCE * power_boost
-                if vF < -REVERSE_VMAX:
-                        engine = 0.0
-        else:
-                var curve := maxf(1.0 - rpm_norm, 0.0)
-                engine = maxf(_throttle * power_boost * ((-max_torque / max_wheel_rpm) * rpm + max_torque), 0.0)
+                # stopped + brake = parking brake: hold still, NEVER creep
+                # backwards (no reverse gear in this game by design).
+                brake_f = max_brake_force * _brake
+                brake_r = max_brake_force * _brake
 
         var drive := _driving_wheels()
         for w in drive:

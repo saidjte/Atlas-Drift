@@ -226,9 +226,17 @@ func _build_road_generator() -> void:
         # Belt & suspenders: make sure every generated collision body carries
         # the "road" group so the car's per-wheel surface grip detects it.
         var grouped := 0
+        # v0.5.1 FIX ("السيارة تلتصق بجدران الطريق"): low-friction road
+        # colliders so body scrapes (underside slabs, elevated edges, landings)
+        # slide instead of glueing. Driving grip is unaffected — the raycast
+        # wheels use wheel_friction_slip, never the PhysicsMaterial.
+        var road_pm := PhysicsMaterial.new()
+        road_pm.friction = 0.05
+        road_pm.bounce = 0.05
         for cnode in container.get_collision_nodes():
                 if not cnode.is_in_group("road"):
                         cnode.add_to_group("road")
+                cnode.physics_material_override = road_pm
                 grouped += 1
         print("RoadGen: %d RoadPoints -> %d segments, %d collision bodies" % [
                 count, container.get_segments().size(), grouped])
@@ -295,6 +303,13 @@ func _build_rails() -> void:
                 shape.set_faces(faces)
                 var body := StaticBody3D.new()
                 body.add_to_group("rail")
+                # v0.5.1 FIX ("السيارة تلتصق بالجدران الجانبية"): friction-free
+                # rails with a touch of bounce — a car scraping the wall slides
+                # along it and is gently pushed back instead of sticking.
+                var rail_pm := PhysicsMaterial.new()
+                rail_pm.friction = 0.0
+                rail_pm.bounce = 0.3
+                body.physics_material_override = rail_pm
                 var cs := CollisionShape3D.new()
                 cs.shape = shape
                 body.add_child(cs)
@@ -466,6 +481,12 @@ func _park_truck(path: String, cell_local: Vector3, yaw: float) -> void:
 
 func _make_static_box(pos: Vector3, size: Vector3, yaw: float) -> void:
         var body := StaticBody3D.new()
+        # v0.5.1: same anti-stick treatment as the rails — the car nudges
+        # around parked trucks/obstacles instead of welding to them.
+        var pm := PhysicsMaterial.new()
+        pm.friction = 0.05
+        pm.bounce = 0.15
+        body.physics_material_override = pm
         var cs := CollisionShape3D.new()
         var shape := BoxShape3D.new()
         shape.size = size
