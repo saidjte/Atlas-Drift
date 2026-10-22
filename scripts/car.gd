@@ -21,12 +21,16 @@ extends VehicleBody3D
 ##  - Real engine / skid loops + drift smoke particles are the Starter Kit
 ##    assets (audio/*.ogg, sprites/smoke.png).
 ##
-## Body frame: forward = +Z, up = +Y, left = +X — Godot's VehicleBody3D
-## convention (positive engine_force drives +Z, verified empirically on
-## 4.7.2). The glTF model faces -Z natively, so the visual root is yawed
-## 180°; positive VehicleWheel3D steering points the wheels toward +X (car
-## LEFT when viewed from behind), so steer input maps as  left - right
-## (fixes the v0.2.0 inverted steering on touch and keyboard).
+## Body frame: forward = +Z, up = +Y — positive engine_force drives +Z
+## (verified empirically on 4.7.2). v0.5.0 orientation fix: car_model.glb
+## natively faces +Z (its Headlights surface sits at z ≈ +2.0 and TailLights
+## at z ≈ -2.1, and the original asset's own car.tscn steers the nodes named
+## rear_* — i.e. the glb's front_/rear_ node names are swapped relative to
+## the geometry). The visual root is therefore NOT yawed, the physics wheels
+## keep their glTF positions, and the wheels array is filled physical-front
+## first so the [FL, FR, RL, RR] order the game logic expects stays physical.
+## Positive VehicleWheel3D steering points the wheels toward +X (car LEFT
+## when viewed from behind), so steer input maps as left - right (v0.3.0).
 
 # ---- SRCoder Simple Car style tuning (kept names, retuned values) ----
 @export var max_steer := 0.55             # rad, low-speed steering lock
@@ -455,14 +459,22 @@ func _load_first_preset() -> void:
 ## car_model.glb from "3D Car With Settingspanel" (CC0). Godot 4.7's glTF
 ## importer converts the model's *_wheel nodes into real VehicleWheel3D
 ## nodes (with the wheel meshes already parented inside), so the visuals are
-## adopted as-is: each wheel is re-parented under this VehicleBody3D at the
-## 180°-yawed position (the glTF faces -Z, the body drives along +Z), and
-## re-tuned to the SRCoder-style suspension numbers. The Body material is
-## tinted green — the livery requested since v0.3.0 — and the body mesh is
-## lifted so the model's wheel arches line up with the physics wheel centers.
+## adopted as-is: each wheel is re-parented under this VehicleBody3D at its
+## own glTF position (the model natively faces +Z — the SAME direction the
+## body drives — so no yaw/mirror is applied) and re-tuned to the SRCoder
+## style suspension numbers. The Body material is tinted green — the livery
+## requested since v0.3.0 — and the body mesh is lifted so the model's wheel
+## arches line up with the physics wheel centers.
+##
+## v0.5.0 FIX ("السيارة مقلوبة الامام في الخلف"): v0.4.0 assumed the glb
+## faces -Z and mirrored everything (wheel positions negated + visual root
+## yawed PI), which rendered the whole car nose-backwards while driving.
+## Verified against the glb itself: Headlights surface centroid z ≈ +2.0,
+## TailLights ≈ -2.1 → the model faces +Z exactly like the drive direction.
 func _build_visuals() -> void:
         var car_scene: PackedScene = load("res://assets/car3d/car_model.glb")
         var vis := car_scene.instantiate() as Node3D
+        vis.name = "ModelVis"
         add_child(vis)
         _tint_body_green(vis)
 
@@ -472,27 +484,33 @@ func _build_visuals() -> void:
         for ch in vis.get_children():
                 if ch is VehicleWheel3D:
                         by_name[String(ch.name)] = ch
-        var order := ["front_left", "front_right", "rear_left", "rear_right"]
+        # Physical order [FL, FR, RL, RR]. The glb node names are swapped
+        # relative to the geometry: nodes named front_* sit at z<0 (physical
+        # REAR) and rear_* at z>0 (physical FRONT), and left/right are
+        # mirrored as well (for a +Z-facing body, physical left = +X). So the
+        # list reads odd on purpose — the first two entries are the PHYSICAL
+        # front wheels, which is what the brake split / RWD logic expects.
+        var order := ["rear_right", "rear_left", "front_right", "front_left"]
         wheels = []
         for nm in order:
                 var w := by_name.get(nm) as VehicleWheel3D
                 if w == null:
                         push_warning("car_model.glb wheel missing: %s" % nm)
                         continue
-                var glb_pos := w.position          # glTF space (forward = -Z)
+                var glb_pos := w.position          # glTF space (forward = +Z)
                 vis.remove_child(w)
-                w.position = Vector3(-glb_pos.x, WHEEL_RADIUS + REST_LENGTH, -glb_pos.z)
-                var is_front := glb_pos.z < 0.0
+                w.position = Vector3(glb_pos.x, WHEEL_RADIUS + REST_LENGTH, glb_pos.z)
+                var is_front := glb_pos.z > 0.0
                 w.use_as_steering = is_front
                 w.use_as_traction = not is_front
                 _tune_wheel(w)
                 add_child(w)
                 wheels.append(w)
 
-        # Body visual: yaw PI (model -Z -> drive +Z), lift the arch line
-        # (model wheel centers sit ARCH_H below the model origin) onto the
-        # physics wheel centers.
-        vis.rotation.y = PI
+        # Body visual: NO yaw (the model already faces +Z, the same direction
+        # the body drives — the v0.5.0 fix), just lift the arch line (model
+        # wheel centers sit ARCH_H below the model origin) onto the physics
+        # wheel centers.
         vis.position = Vector3(0, WHEEL_RADIUS + ARCH_H, 0)
 
         var cs := CollisionShape3D.new()
@@ -571,8 +589,10 @@ func _build_smoke() -> void:
         pm.color = Color(0.37, 0.37, 0.42, 1.0)
         pm.alpha_curve = alpha_tex
 
-        smoke_rl = _make_smoke_node(pm, mat, Vector3(0.82, 0.18, -1.29))
-        smoke_rr = _make_smoke_node(pm, mat, Vector3(-0.82, 0.18, -1.29))
+        # Rear-wheel positions come straight from the adopted physics wheels
+        # (physical rear = the glb nodes named front_*, z = -1.544).
+        smoke_rl = _make_smoke_node(pm, mat, Vector3(0.82, 0.18, -1.544))
+        smoke_rr = _make_smoke_node(pm, mat, Vector3(-0.82, 0.18, -1.544))
 
 
 func _make_smoke_node(pm: ParticleProcessMaterial, mat: Material, pos: Vector3) -> GPUParticles3D:

@@ -14,6 +14,7 @@ var card_l: Label
 var card_sub_l: Label
 var card_box: PanelContainer
 var fade: ColorRect
+var pause_btn: Button
 var _msg_t := 0.0
 var _card_t := 0.0
 
@@ -124,6 +125,44 @@ func _ready() -> void:
         debug_l.offset_bottom = -8
         debug_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
         root.add_child(debug_l)
+
+        # Pause button (top-right, v0.5.0): opens صفحة التوقف المؤقت. The
+        # icon is two drawn bars — deliberately font-independent (a text
+        # "II" broke on some Android fonts in the TurboRacing era).
+        pause_btn = Button.new()
+        pause_btn.anchor_left = 1.0
+        pause_btn.anchor_right = 1.0
+        pause_btn.offset_left = -100
+        pause_btn.offset_right = -28
+        pause_btn.offset_top = 16
+        pause_btn.offset_bottom = 82
+        var pb_sb := StyleBoxFlat.new()
+        pb_sb.bg_color = Color(0.13, 0.16, 0.23, 0.82)
+        pb_sb.set_corner_radius_all(14)
+        pb_sb.border_width_bottom = 3
+        pb_sb.border_color = Color(0.85, 0.62, 0.18)
+        pause_btn.add_theme_stylebox_override("normal", pb_sb)
+        var pb_sb2: StyleBoxFlat = pb_sb.duplicate()
+        pb_sb2.bg_color = Color(0.30, 0.22, 0.10, 0.92)
+        pause_btn.add_theme_stylebox_override("pressed", pb_sb2)
+        var pb_sb3: StyleBoxFlat = pb_sb.duplicate()
+        pb_sb3.bg_color = Color(0.18, 0.22, 0.31, 0.88)
+        pause_btn.add_theme_stylebox_override("hover", pb_sb3)
+        for bx in [0.0, 1.0]:
+                var bar := ColorRect.new()
+                bar.color = Color(0.96, 0.93, 0.86, 0.95)
+                bar.anchor_left = 0.5
+                bar.anchor_right = 0.5
+                bar.anchor_top = 0.5
+                bar.anchor_bottom = 0.5
+                bar.offset_left = -8.0 + bx * 16.0
+                bar.offset_right = 1.0 + bx * 16.0
+                bar.offset_top = -16.0
+                bar.offset_bottom = 16.0
+                bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+                pause_btn.add_child(bar)
+        pause_btn.pressed.connect(func() -> void: main.open_pause())
+        root.add_child(pause_btn)
 
         fade = ColorRect.new()
         fade.color = Color(0, 0, 0, 0)

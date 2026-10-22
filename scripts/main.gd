@@ -1,13 +1,14 @@
 extends Node3D
 ## Atlas Drift bootstrap: input map, fonts, EventAudio bank, menu <-> world.
 
-const GAME_VERSION := "0.4.0"
+const GAME_VERSION := "0.5.0"
 const SAVE_PATH := "user://atlas.cfg"
 
 var font_regular: FontFile
 var font_bold: FontFile
 var world
 var menu
+var pause_menu
 var car_panel: CarSettingsPanel
 
 
@@ -18,6 +19,9 @@ func _ready() -> void:
         RenderingServer.set_default_clear_color(Color(0.09, 0.11, 0.16))
         _setup_event_audio()
         _make_menu()
+        pause_menu = load("res://scripts/pause_menu.gd").new()
+        pause_menu.setup(self)
+        add_child(pause_menu)
         if "--smoke" in OS.get_cmdline_user_args():
                 _smoke_test()
 
@@ -85,16 +89,49 @@ func _make_menu() -> void:
 
 
 func start_race() -> void:
+        if get_tree().paused:
+                resume_game()
         if world == null:
                 _ensure_world()
-        else:
-                world.unpause()
         if car_panel != null and car_panel.is_open():
                 car_panel.close()
                 menu.visible = true
                 return
         menu.visible = false
         world.begin_race()
+
+
+## صفحة التوقف المؤقت (v0.5.0): freeze the whole tree and float the pause
+## overlay above it. Allowed mid-race and mid-countdown; released inputs so
+## no TouchScreenButton press survives the freeze as a stuck pedal.
+func open_pause() -> void:
+        if world == null:
+                return
+        if world.state != "race" and world.state != "countdown":
+                return
+        if pause_menu != null and pause_menu.is_open():
+                return
+        _release_drive_actions()
+        get_tree().paused = true
+        pause_menu.open()
+
+
+func resume_game() -> void:
+        get_tree().paused = false
+        if pause_menu != null:
+                pause_menu.close()
+        _release_drive_actions()
+
+
+func restart_race() -> void:
+        resume_game()
+        menu.visible = false
+        world.begin_race()
+
+
+func _release_drive_actions() -> void:
+        for a in ["gas", "brake", "left", "right", "hand"]:
+                Input.action_release(a)
 
 
 ## Lazily build the world (track + car + HUD) so the car settings panel has a
@@ -119,6 +156,9 @@ func open_car_settings() -> void:
 
 
 func exit_to_menu() -> void:
+        get_tree().paused = false
+        if pause_menu != null:
+                pause_menu.close()
         if world != null:
                 world.pause()
         menu.visible = true
@@ -150,9 +190,12 @@ func quit_game() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+        # ESC during a race/countdown opens the pause screen (while paused the
+        # tree freezes this PAUSABLE handler — pause_menu.gd, which runs with
+        # PROCESS_MODE_ALWAYS, owns ESC-to-resume instead).
         if event.is_action_pressed("ui_cancel"):
-                if world != null and world.state == "race":
-                        exit_to_menu()
+                if world != null and not get_tree().paused:
+                        open_pause()
 
 
 ## Headless end-to-end smoke drive: menu -> race -> gas -> steer (direction
@@ -254,6 +297,68 @@ func _smoke_test() -> void:
         str(saved), str(in_list), str(loaded), torque_after, str(gone)])
     if not saved or not in_list or not loaded or absf(torque_after - 2750.0) > 1.0 or not gone:
         print("SMOKE_FAIL: preset round-trip broken")
+        ok = false
+
+    # --- v0.5.0 orientation checks (the "السيارة مقلوبة" bug): the model
+    # must face +Z (headlights surface centroid positive, taillights
+    # negative), steering on the physical front (+Z) wheels, traction on
+    # the physical rear. ---
+    var vis: Node3D = world.car.get_node_or_null("ModelVis")
+    if vis == null:
+        print("SMOKE_FAIL: ModelVis missing")
+        ok = false
+    else:
+        var hl_z := 99.0
+        var tl_z := -99.0
+        for ch in vis.get_children():
+            if ch is MeshInstance3D:
+                var mi := ch as MeshInstance3D
+                for s in mi.mesh.get_surface_count():
+                    var mat: Material = mi.mesh.surface_get_material(s)
+                    if mat == null:
+                        mat = mi.get_active_material(s)
+                    if mat == null:
+                        continue
+                    var arr := mi.mesh.surface_get_arrays(s)
+                    var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+                    if verts.size() == 0:
+                        continue
+                    var zsum := 0.0
+                    for v in verts:
+                        zsum += v.z
+                    var cz := zsum / float(verts.size())
+                    if mat.resource_name == "Headlights":
+                        hl_z = cz
+                    elif mat.resource_name == "TailLights":
+                        tl_z = cz
+        var fz: float = world.car.wheels[0].position.z
+        var rz: float = world.car.wheels[2].position.z
+        var steer_map: bool = world.car.wheels[0].use_as_steering and not world.car.wheels[2].use_as_steering
+        print("SMOKE orient: headlights_z=%.2f taillights_z=%.2f front_z=%.2f rear_z=%.2f steer_map=%s" % [hl_z, tl_z, fz, rz, str(steer_map)])
+        if hl_z < 0.3 or tl_z > -0.3:
+            print("SMOKE_FAIL: model nose is not at +Z (hl=%.2f tl=%.2f)" % [hl_z, tl_z])
+            ok = false
+        if fz <= 0.0 or rz >= 0.0:
+            print("SMOKE_FAIL: physics wheels mirrored (front_z=%.2f rear_z=%.2f)" % [fz, rz])
+            ok = false
+        if not steer_map:
+            print("SMOKE_FAIL: steering not on physical front wheels")
+            ok = false
+
+    # --- v0.5.0 pause screen (صفحة التوقف المؤقت): open -> frozen tree +
+    # overlay visible -> resume -> back to live race. ---
+    open_pause()
+    await get_tree().process_frame
+    await get_tree().process_frame
+    var p_ok: bool = get_tree().paused and pause_menu.visible and pause_menu.is_open()
+    print("SMOKE pause: paused=%s menu=%s speed=%d" % [
+        str(get_tree().paused), str(pause_menu.is_open()), int(world.car.linear_velocity.length())])
+    resume_game()
+    await get_tree().process_frame
+    var r_ok: bool = not get_tree().paused and not pause_menu.is_open()
+    print("SMOKE resume: paused=%s open=%s" % [str(get_tree().paused), str(pause_menu.is_open())])
+    if not p_ok or not r_ok:
+        print("SMOKE_FAIL: pause flow broken (open=%s resume=%s)" % [str(p_ok), str(r_ok)])
         ok = false
 
     if contacts < 4:
